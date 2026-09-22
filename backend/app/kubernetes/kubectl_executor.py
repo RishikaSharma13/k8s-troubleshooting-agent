@@ -25,11 +25,15 @@ class KubectlResult:
 class KubectlExecutor:
     """Runs kubectl without a shell and returns safe, structured results."""
 
-    def __init__(self, kubeconfig_path: str = "") -> None:
+    def __init__(self, kubeconfig_path: str = "", context: str | None = None) -> None:
         self.kubeconfig_path = kubeconfig_path
+        self.context = context
 
     def run(self, *args: str, timeout: int = 30) -> KubectlResult:
-        command = ["kubectl", *args]
+        command = ["kubectl"]
+        if self.context:
+            command.extend(["--context", self.context])
+        command.extend(args)
         env = os.environ.copy()
         if self.kubeconfig_path:
             env["KUBECONFIG"] = self.kubeconfig_path
@@ -44,3 +48,6 @@ class KubectlExecutor:
             logger.warning("kubectl failed: {}", completed.stderr.strip())
             return KubectlResult(command, False, completed.stdout, completed.stderr, "kubectl returned a non-zero exit code")
         return KubectlResult(command, True, completed.stdout, completed.stderr)
+
+    def contexts(self) -> KubectlResult:
+        return self.run("config", "get-contexts", "-o", "name")

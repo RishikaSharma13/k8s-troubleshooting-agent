@@ -10,8 +10,8 @@ from app.kubernetes.pod_inspector import PodInspector
 
 
 class InvestigationService:
-    def __init__(self) -> None:
-        kubectl = KubectlExecutor(settings.kubeconfig_path)
+    def __init__(self, context: str | None = None) -> None:
+        kubectl = KubectlExecutor(settings.kubeconfig_path, context)
         self.pods = PodInspector(kubectl)
         self.logs = LogsCollector(kubectl)
         self.events = EventsAnalyzer(kubectl)

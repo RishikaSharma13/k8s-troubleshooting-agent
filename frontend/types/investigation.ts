@@ -23,3 +23,5 @@ export type HistoryRow = {
   confidence: number;
   status: string;
 };
+
+export type ClusterResponse = { status: string; clusters: string[]; error?: string };

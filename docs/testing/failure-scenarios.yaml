@@ -1,0 +1,84 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: troubleshooting-test
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oom-test
+  namespace: troubleshooting-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: oom-test }
+  template:
+    metadata: { labels: { app: oom-test } }
+    spec:
+      containers:
+        - name: app
+          image: polinux/stress:1.0
+          args: ["--vm", "1", "--vm-bytes", "256M", "--vm-hang", "1"]
+          resources:
+            limits:
+              memory: 32Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: crashloop-test
+  namespace: troubleshooting-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: crashloop-test }
+  template:
+    metadata: { labels: { app: crashloop-test } }
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.36
+          command: ["/bin/sh", "-c", "echo MISSING_DATABASE_URL; exit 1"]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: imagepull-test
+  namespace: troubleshooting-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: imagepull-test }
+  template:
+    metadata: { labels: { app: imagepull-test } }
+    spec:
+      containers:
+        - name: app
+          image: example.invalid/agent/does-not-exist:wrong-tag
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: selector-mismatch-test
+  namespace: troubleshooting-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: selector-mismatch-test }
+  template:
+    metadata: { labels: { app: selector-mismatch-test } }
+    spec:
+      containers:
+        - name: app
+          image: nginx:stable
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: selector-mismatch-test
+  namespace: troubleshooting-test
+spec:
+  selector: { app: wrong-label }
+  ports:
+    - port: 80
+      targetPort: 80
