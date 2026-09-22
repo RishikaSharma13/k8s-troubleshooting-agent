@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 from app.core.config import settings
+from app.services.investigation import InvestigationService
 
 app = FastAPI(title="AI Kubernetes Agent")
 
@@ -21,3 +22,9 @@ app.add_middleware(
 def health() -> dict[str, str]:
     logger.info("Health check requested")
     return {"status": "healthy", "service": "ai-kubernetes-agent"}
+
+
+@app.post("/investigate")
+def investigate() -> dict[str, object]:
+    logger.info("Kubernetes investigation requested")
+    return {"status": "success", "investigation": InvestigationService().investigate()}

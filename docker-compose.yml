@@ -7,6 +7,8 @@ services:
       - ./backend/.env
     environment:
       - KUBECONFIG_PATH=${KUBECONFIG_PATH:-}
+    volumes:
+      - ${HOME}/.kube:/root/.kube:ro
 
   frontend:
     build: ./frontend
