@@ -15,13 +15,7 @@ class LLMClient:
             raise RuntimeError("OPENROUTER_API_KEY is not configured")
         if not self.model:
             raise RuntimeError("OPENROUTER_MODEL is not configured")
-        payload: dict[str, Any] = {
-            "model": self.model,
-            "messages": messages,
-            "temperature": 0.1,
-            "max_tokens": 1000,
-            "response_format": {"type": "json_object"},
-        }
+        payload: dict[str, Any] = {"model": self.model, "messages": messages, "temperature": 0.1, "max_tokens": 1000}
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
         last_error: Exception | None = None
         async with httpx.AsyncClient(timeout=self.timeout) as client:

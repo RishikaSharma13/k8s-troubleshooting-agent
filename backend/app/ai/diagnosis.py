@@ -26,17 +26,7 @@ class DiagnosisService:
         cleaned = content.strip()
         if cleaned.startswith("```"):
             cleaned = cleaned.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-        try:
-            data = json.loads(cleaned)
-        except json.JSONDecodeError:
-            # Some models still wrap JSON in explanatory text. Try the outermost object.
-            start, end = cleaned.find("{"), cleaned.rfind("}")
-            if start < 0 or end <= start:
-                raise ValueError("OpenRouter returned an invalid JSON diagnosis")
-            try:
-                data = json.loads(cleaned[start : end + 1])
-            except json.JSONDecodeError as exc:
-                raise ValueError("OpenRouter returned malformed JSON diagnosis") from exc
+        data = json.loads(cleaned)
         required = ["root_cause", "explanation", "suggested_fix", "kubectl_commands", "prevention_recommendation", "confidence"]
         if any(key not in data for key in required):
             raise ValueError("LLM response is missing required diagnosis fields")
