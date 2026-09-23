@@ -46,6 +46,31 @@ main pre { background: #020817 !important; border: 1px solid rgba(103, 159, 207,
 main .bg-amber-50 { background: rgba(120, 73, 12, 0.3) !important; color: #ffd38b !important; }
 main .text-red-600 { color: #ff9baf !important; }
 
+.investigation-banner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: .65rem;
+  border: 1px solid rgba(34, 211, 238, .28);
+  border-radius: .75rem;
+  padding: .9rem 1rem;
+  color: #9deaff;
+  background: linear-gradient(90deg, rgba(8, 84, 118, .35), rgba(38, 54, 150, .35));
+  animation: banner-pulse 2s ease-in-out infinite;
+}
+.investigation-dot { width: .55rem; height: .55rem; border-radius: 999px; background: #22d3ee; box-shadow: 0 0 14px #22d3ee; }
+.investigation-dots { letter-spacing: .18rem; animation: dots-blink 1.2s steps(3, end) infinite; }
+.investigation-timeline { border-left: 1px solid rgba(103, 159, 207, .28); padding-left: 1.25rem; }
+.timeline-item { position: relative; display: flex; align-items: center; gap: .75rem; min-height: 2.8rem; color: #7188a5; }
+.timeline-icon { position: absolute; left: -1.68rem; display: flex; align-items: center; justify-content: center; width: 1.2rem; height: 1.2rem; border-radius: 999px; border: 1px solid #46617f; background: #08152d; font-size: .75rem; }
+.timeline-item.complete { color: #8df2db; }
+.timeline-item.complete .timeline-icon { border-color: #10b981; background: #087060; color: #d1fae5; }
+.timeline-item.active { color: #9deaff; }
+.timeline-item.active .timeline-icon { border-color: #22d3ee; animation: timeline-pulse 1.2s ease-in-out infinite; }
+@keyframes banner-pulse { 0%, 100% { box-shadow: 0 0 0 rgba(34, 211, 238, 0); } 50% { box-shadow: 0 0 28px rgba(34, 211, 238, .12); } }
+@keyframes timeline-pulse { 0%, 100% { box-shadow: 0 0 0 rgba(34, 211, 238, 0); } 50% { box-shadow: 0 0 16px rgba(34, 211, 238, .8); } }
+@keyframes dots-blink { 0% { opacity: .25; } 50% { opacity: 1; } 100% { opacity: .25; } }
+
 button, input, select { font: inherit; }
 button { transition: transform 160ms ease, box-shadow 160ms ease, background-color 160ms ease, opacity 160ms ease; }
 button:not(:disabled):hover { transform: translateY(-1px); box-shadow: 0 8px 18px rgba(15, 23, 42, 0.10); }
