@@ -12,6 +12,10 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [name, setName] = useState("");
+  const [verificationCode, setVerificationCode] = useState("");
+  const [authMode, setAuthMode] = useState<"sign-in" | "sign-up" | "verify">("sign-in");
+  const [authMessage, setAuthMessage] = useState("");
   const [authError, setAuthError] = useState("");
   const [diagnosis, setDiagnosis] = useState<Diagnosis | null>(null);
   const [history, setHistory] = useState<HistoryRow[]>([]);
@@ -47,9 +51,39 @@ export default function Home() {
   }, [user]);
 
   const signIn = async (event: FormEvent) => {
-    event.preventDefault(); setAuthError("");
+    event.preventDefault(); setAuthError(""); setAuthMessage("");
     const { data, error: signInError } = await insforge.auth.signInWithPassword({ email, password });
     if (signInError) setAuthError(signInError.message); else setUser(data?.user ?? null);
+  };
+
+  const signUp = async (event: FormEvent) => {
+    event.preventDefault(); setAuthError(""); setAuthMessage("");
+    const { error: signUpError } = await insforge.auth.signUp({ email, password, name: name || undefined });
+    if (signUpError) {
+      setAuthError(signUpError.message);
+      return;
+    }
+    setAuthMode("verify");
+    setAuthMessage("We sent a 6-digit verification code to your email.");
+  };
+
+  const verifyEmail = async (event: FormEvent) => {
+    event.preventDefault(); setAuthError(""); setAuthMessage("");
+    const { error: verifyError } = await insforge.auth.verifyEmail({ email, otp: verificationCode });
+    if (verifyError) {
+      setAuthError(verifyError.message);
+      return;
+    }
+    setAuthMode("sign-in");
+    setAuthMessage("Email verified. You can now sign in.");
+    setVerificationCode("");
+  };
+
+  const resendVerification = async () => {
+    setAuthError(""); setAuthMessage("");
+    const { error: resendError } = await insforge.auth.resendVerificationEmail({ email });
+    if (resendError) setAuthError(resendError.message);
+    else setAuthMessage("A new verification code was sent.");
   };
 
   const investigate = async () => {
@@ -74,6 +108,6 @@ export default function Home() {
   };
 
   if (loading) return <main className="flex min-h-screen items-center justify-center">Loading...</main>;
-  if (!user) return <main className="flex min-h-screen items-center justify-center px-6"><form onSubmit={signIn} className="w-full max-w-sm rounded-2xl bg-white p-8 shadow-sm ring-1 ring-slate-200"><p className="text-sm font-semibold uppercase tracking-widest text-blue-600">AI Kubernetes Agent</p><h1 className="mt-2 text-2xl font-bold">Sign in</h1><input className="mt-6 w-full rounded border p-3" type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} required /><input className="mt-3 w-full rounded border p-3" type="password" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} required /><button className="mt-5 w-full rounded bg-blue-600 px-4 py-3 font-medium text-white" type="submit">Sign in</button>{authError && <p className="mt-3 text-sm text-red-600">{authError}</p>}</form></main>;
+  if (!user) return <main className="flex min-h-screen items-center justify-center px-6"><form onSubmit={authMode === "sign-in" ? signIn : authMode === "sign-up" ? signUp : verifyEmail} className="w-full max-w-sm rounded-2xl bg-white p-8 shadow-sm ring-1 ring-slate-200"><p className="text-sm font-semibold uppercase tracking-widest text-blue-600">AI Kubernetes Agent</p><h1 className="mt-2 text-2xl font-bold">{authMode === "sign-in" ? "Sign in" : authMode === "sign-up" ? "Create account" : "Verify email"}</h1>{authMode === "verify" ? <><p className="mt-2 text-sm text-slate-600">Enter the 6-digit code sent to {email}.</p><input className="mt-6 w-full rounded border p-3" type="text" inputMode="numeric" pattern="[0-9]{6}" maxLength={6} placeholder="6-digit code" value={verificationCode} onChange={(e) => setVerificationCode(e.target.value)} required /><button className="mt-5 w-full rounded bg-blue-600 px-4 py-3 font-medium text-white" type="submit">Verify email</button><button className="mt-3 w-full text-sm text-blue-600" type="button" onClick={() => void resendVerification()}>Resend code</button></> : <><>{authMode === "sign-up" && <input className="mt-6 w-full rounded border p-3" type="text" placeholder="Name (optional)" value={name} onChange={(e) => setName(e.target.value)} />}</><input className={`${authMode === "sign-up" ? "mt-3" : "mt-6"} w-full rounded border p-3`} type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} required /><input className="mt-3 w-full rounded border p-3" type="password" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} required /><button className="mt-5 w-full rounded bg-blue-600 px-4 py-3 font-medium text-white" type="submit">{authMode === "sign-in" ? "Sign in" : "Sign up"}</button></>}{authMessage && <p className="mt-3 text-sm text-emerald-700">{authMessage}</p>}{authError && <p className="mt-3 text-sm text-red-600">{authError}</p>}<p className="mt-5 text-center text-sm text-slate-600">{authMode === "sign-in" ? <>Need an account? <button type="button" className="text-blue-600" onClick={() => { setAuthMode("sign-up"); setAuthError(""); setAuthMessage(""); }}>Sign up</button></> : authMode === "sign-up" ? <>Already have an account? <button type="button" className="text-blue-600" onClick={() => { setAuthMode("sign-in"); setAuthError(""); setAuthMessage(""); }}>Sign in</button></> : <button type="button" className="text-blue-600" onClick={() => { setAuthMode("sign-in"); setAuthError(""); setAuthMessage(""); }}>Back to sign in</button>}</p></form></main>;
   return <main className="min-h-screen px-6 py-10"><div className="mx-auto max-w-5xl"><header className="flex items-center justify-between"><div><p className="text-sm font-semibold uppercase tracking-widest text-blue-600">AI Kubernetes Agent</p><h1 className="mt-2 text-3xl font-bold">Cluster Dashboard</h1></div><button onClick={() => { void insforge.auth.signOut(); setUser(null); }} className="rounded border px-4 py-2 text-sm">Sign out</button></header><section className="mt-8 rounded-2xl bg-white p-8 shadow-sm ring-1 ring-slate-200"><div className="flex items-center justify-between"><div><h2 className="text-xl font-semibold">Investigate Cluster</h2><p className="mt-1 text-sm text-slate-600">Collect evidence and generate an SRE diagnosis.</p></div><button onClick={() => void investigate()} disabled={running || !selectedContext} className="rounded-lg bg-blue-600 px-5 py-3 font-medium text-white disabled:opacity-50">{running ? "Investigating..." : "Investigate Cluster"}</button></div><label className="mt-6 block text-sm font-medium text-slate-700">Kubernetes cluster context<select value={selectedContext} onChange={(e) => setSelectedContext(e.target.value)} className="mt-2 w-full rounded border p-3" disabled={running}><option value="">Select a cluster</option>{clusters.map((cluster) => <option key={cluster} value={cluster}>{cluster}</option>)}</select></label>{clusters.length === 0 && <p className="mt-3 text-sm text-amber-700">No kubeconfig contexts are available to the backend.</p>}{stage >= 0 && <div className="mt-8 grid gap-2 sm:grid-cols-2">{stages.map((label, index) => <p key={label} className={`rounded p-3 text-sm ${index <= stage ? "bg-emerald-50 text-emerald-800" : "bg-slate-50 text-slate-500"}`}>{index <= stage ? "✓" : "○"} {label}</p>)}</div>}{error && <p className="mt-4 text-sm text-red-600">{error}</p>}</section>{diagnosis?.available && <section className="mt-6 rounded-2xl bg-white p-8 shadow-sm ring-1 ring-slate-200"><h2 className="text-xl font-semibold">Diagnosis</h2><div className="mt-5 grid gap-5"><div><h3 className="font-medium">Root Cause</h3><p className="mt-1 text-slate-700">{diagnosis.root_cause}</p></div><div><h3 className="font-medium">Explanation</h3><p className="mt-1 text-slate-700">{diagnosis.explanation}</p></div><div><h3 className="font-medium">Suggested Fix</h3><p className="mt-1 text-slate-700">{diagnosis.suggested_fix}</p></div><div><h3 className="font-medium">kubectl Commands</h3><pre className="mt-1 overflow-auto rounded bg-slate-900 p-4 text-sm text-slate-100">{diagnosis.kubectl_commands?.join("\n")}</pre></div><p className="font-semibold text-blue-700">Confidence: {diagnosis.confidence}%</p></div></section>}{diagnosis && !diagnosis.available && <section className="mt-6 rounded-xl bg-amber-50 p-5 text-amber-900">Diagnosis unavailable: {diagnosis.error}</section>}<section className="mt-6 rounded-2xl bg-white p-8 shadow-sm ring-1 ring-slate-200"><h2 className="text-xl font-semibold">Recent Investigations</h2><div className="mt-4 overflow-x-auto"><table className="w-full text-left text-sm"><thead><tr className="border-b text-slate-500"><th className="p-3">Time</th><th className="p-3">Root Cause</th><th className="p-3">Confidence</th><th className="p-3">Status</th></tr></thead><tbody>{history.map((item) => <tr className="border-b" key={item.id}><td className="p-3">{new Date(item.created_at).toLocaleString()}</td><td className="p-3">{item.root_cause}</td><td className="p-3">{item.confidence}%</td><td className="p-3">{item.status}</td></tr>)}</tbody></table>{history.length === 0 && <p className="py-6 text-sm text-slate-500">No investigations yet.</p>}</div></section></div></main>;
 }
