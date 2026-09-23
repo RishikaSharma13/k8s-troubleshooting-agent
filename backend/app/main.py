@@ -33,10 +33,21 @@ def health() -> dict[str, str]:
 
 @app.get("/clusters")
 def clusters() -> dict[str, object]:
-    result = KubectlExecutor(settings.kubeconfig_path).contexts()
+    executor = KubectlExecutor(settings.kubeconfig_path)
+    result = executor.context_details()
     if not result.success:
         return {"status": "error", "clusters": [], "error": _friendly_kubectl_error(result)}
-    return {"status": "success", "clusters": [line for line in result.stdout.splitlines() if line.strip()]}
+    config = result.json() or {}
+    current = config.get("current-context", "")
+    clusters_by_name = {item.get("name"): item.get("cluster", {}) for item in config.get("clusters", [])}
+    details = []
+    for item in config.get("contexts", []):
+        context_name = item.get("name", "")
+        context = item.get("context", {})
+        cluster_name = context.get("cluster", "")
+        cluster = clusters_by_name.get(cluster_name, {})
+        details.append({"name": context_name, "context": context_name, "cluster": cluster_name, "server": cluster.get("server", ""), "namespace": context.get("namespace", "default"), "current": context_name == current})
+    return {"status": "success", "clusters": details}
 
 
 @app.post("/investigate")

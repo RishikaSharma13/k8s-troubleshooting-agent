@@ -24,4 +24,5 @@ export type HistoryRow = {
   status: string;
 };
 
-export type ClusterResponse = { status: string; clusters: string[]; error?: string };
+export type Cluster = { name: string; context: string; cluster?: string; server?: string; namespace?: string; current?: boolean };
+export type ClusterResponse = { status: string; clusters: Cluster[]; error?: string };

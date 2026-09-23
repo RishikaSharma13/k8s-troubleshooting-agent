@@ -51,3 +51,6 @@ class KubectlExecutor:
 
     def contexts(self) -> KubectlResult:
         return self.run("config", "get-contexts", "-o", "name")
+
+    def context_details(self) -> KubectlResult:
+        return self.run("config", "view", "--raw", "-o", "json")
