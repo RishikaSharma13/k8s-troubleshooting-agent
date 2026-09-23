@@ -10,10 +10,41 @@ body {
   background:
     radial-gradient(circle at 10% 0%, rgba(37, 99, 235, 0.10), transparent 32rem),
     radial-gradient(circle at 90% 20%, rgba(14, 165, 233, 0.08), transparent 28rem),
-    #f8fafc;
-  color: #0f172a;
+    #050b1b;
+  color: #e5eefc;
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
+
+/* Product dashboard theme */
+main { color: #e5eefc; }
+main > div > header { border-bottom: 1px solid rgba(71, 148, 220, 0.16); padding-bottom: 1.5rem; }
+main section,
+main form {
+  background: linear-gradient(145deg, rgba(13, 28, 56, 0.96), rgba(7, 16, 36, 0.98)) !important;
+  border-color: rgba(74, 160, 226, 0.18) !important;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.24), inset 0 1px 0 rgba(148, 213, 255, 0.04) !important;
+}
+main form { border: 1px solid rgba(74, 160, 226, 0.18); }
+main h1, main h2 { color: #f4f8ff; }
+main h3, main label { color: #dcecff; }
+main p, main td { color: #a8bdd8; }
+main header p:first-child { color: #42c8ff; }
+main button.bg-blue-600,
+main button.bg-blue-600:hover {
+  background: linear-gradient(100deg, #08a8d8, #5367f5) !important;
+  box-shadow: 0 10px 26px rgba(27, 142, 229, 0.26);
+}
+main button.border { border-color: rgba(120, 167, 210, 0.32); color: #dcecff; background: rgba(16, 34, 65, 0.7); }
+main input, main select { background: rgba(3, 11, 28, 0.84); border-color: rgba(103, 159, 207, 0.3); color: #e5eefc; }
+main input::placeholder { color: #7188a5; }
+main .bg-emerald-50 { background: rgba(7, 102, 93, 0.34) !important; color: #8df2db !important; }
+main .bg-slate-50 { background: rgba(16, 34, 65, 0.68) !important; color: #8298b5 !important; }
+main .text-slate-600, main .text-slate-700 { color: #a8bdd8 !important; }
+main .text-blue-700 { color: #5ce2ff !important; }
+main .border-b { border-color: rgba(103, 159, 207, 0.2); }
+main pre { background: #020817 !important; border: 1px solid rgba(103, 159, 207, 0.2); }
+main .bg-amber-50 { background: rgba(120, 73, 12, 0.3) !important; color: #ffd38b !important; }
+main .text-red-600 { color: #ff9baf !important; }
 
 button, input, select { font: inherit; }
 button { transition: transform 160ms ease, box-shadow 160ms ease, background-color 160ms ease, opacity 160ms ease; }
