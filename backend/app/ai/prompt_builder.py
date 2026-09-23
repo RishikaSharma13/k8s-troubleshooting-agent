@@ -7,6 +7,7 @@ Do not invent facts. If evidence is insufficient, say so and lower confidence.
 Return valid JSON only with exactly these keys:
 root_cause, explanation, suggested_fix, kubectl_commands, prevention_recommendation, confidence.
 confidence must be an integer from 0 to 100. kubectl_commands must be an array of safe command strings.
+Return only the JSON object. Do not wrap it in Markdown, code fences, or explanatory text.
 """
 
 

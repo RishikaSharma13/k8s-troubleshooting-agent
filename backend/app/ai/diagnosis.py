@@ -10,7 +10,11 @@ from app.core.config import settings
 
 class DiagnosisService:
     def __init__(self) -> None:
-        self.client = LLMClient(settings.openrouter_api_key, settings.openrouter_model)
+        self.client = LLMClient(
+            settings.openrouter_api_key,
+            settings.openrouter_model,
+            settings.llm_api_base_url,
+        )
 
     async def diagnose(self, investigation: dict[str, Any]) -> dict[str, Any]:
         try:
