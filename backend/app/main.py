@@ -6,6 +6,7 @@ from app.core.config import settings
 from app.services.investigation import InvestigationService
 from app.ai.diagnosis import DiagnosisService
 from app.kubernetes.kubectl_executor import KubectlExecutor
+from app.api.predictor_routes import router as predictor_router
 
 app = FastAPI(title="AI Kubernetes Agent")
 
@@ -19,6 +20,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Include predictor routes (Phase 1)
+app.include_router(predictor_router)
 
 
 class InvestigationRequest(BaseModel):
