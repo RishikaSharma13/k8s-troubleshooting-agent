@@ -49,7 +49,8 @@ class MetricsCollector:
                     namespace=namespace,
                     pod_name=pod_name,
                     deployment_name=deployment_name,
-                    memory_percent=memory_percent
+                    memory_percent=memory_percent,
+                    restart_count=restart_count
                 )
                 
                 if trend_data:
@@ -70,6 +71,27 @@ class MetricsCollector:
                     
                     # Add to risks if score is significant
                     if risk_score >= 20:  # Threshold for reporting
+
+                        pending_incident = self.risk_manager.get_pending_incident_for_pod(
+                            namespace=namespace,
+                            pod_name=pod_name,
+                        )
+
+                        if pending_incident is None:
+                            incident = self.create_incident_for_pod(
+                                namespace=namespace,
+                                pod_name=pod_name,
+                                deployment=deployment_name,
+                            )
+
+                            if incident:
+                                logger.info(
+                                    "Created pending incident {} for {}/{}",
+                                    incident["incident_id"],
+                                    namespace,
+                                    pod_name,
+                                )
+
                         risks.append({
                             "pod_name": pod_name,
                             "deployment": deployment_name,
