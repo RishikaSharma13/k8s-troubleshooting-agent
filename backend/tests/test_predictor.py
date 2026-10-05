@@ -3,7 +3,7 @@ import unittest
 
 from app.predictor.trend_detector import TrendDetector
 from app.predictor.risk_manager import RiskManager
-
+from app.predictor.metrics_collector import MetricsCollector
 
 class TestTrendDetector(unittest.TestCase):
 
@@ -234,5 +234,54 @@ class TestActionPlanner(unittest.TestCase):
 
     def test_validate_action_rejects_unknown_action(self):
         self.assertFalse(self.ActionPlanner.validate_action("DELETE_CLUSTER"))
+
+class TestMetricsCollectorIncidents(unittest.TestCase):
+
+    def _create_collector(self):
+        collector = MetricsCollector()
+
+        collector._get_pods_in_namespace = lambda namespace: [
+            {
+                "name": "crash-test-pod",
+                "deployment": "crash-test",
+                "namespace": namespace,
+                "status": "Running",
+                "restart_count": 5,
+            }
+        ]
+
+        return collector
+
+    def test_qualifying_risk_creates_pending_incident(self):
+        collector = self._create_collector()
+
+        result = collector.scan_namespace("default")
+
+        self.assertEqual(result["pods_scanned"], 1)
+        self.assertEqual(len(result["risks"]), 1)
+
+        incidents = collector.get_pending_incidents()
+
+        self.assertEqual(len(incidents), 1)
+        self.assertEqual(incidents[0]["status"], "PENDING")
+        self.assertEqual(
+            incidents[0]["pod_name"],
+            "crash-test-pod",
+        )
+
+    def test_repeated_scan_does_not_create_duplicate_incident(self):
+        collector = self._create_collector()
+
+        first_result = collector.scan_namespace("default")
+        second_result = collector.scan_namespace("default")
+
+        self.assertEqual(len(first_result["risks"]), 1)
+        self.assertEqual(len(second_result["risks"]), 1)
+
+        incidents = collector.get_pending_incidents()
+
+        self.assertEqual(len(incidents), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
