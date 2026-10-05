@@ -140,6 +140,7 @@ class RiskManager:
             "EXECUTING",
             "RESOLVED",
             "FAILED",
+            "REJECTED",
         }
 
         if status not in allowed_statuses:

@@ -149,6 +149,27 @@ class TestRiskManager(unittest.TestCase):
         self.assertEqual(incident.status, "APPROVED")
         self.assertNotIn(incident, self.manager.get_pending_incidents())
 
+    def test_incident_can_be_rejected(self):
+        trend = self.manager.update_pod_metrics(
+            namespace="default",
+            pod_name="demo-pod",
+            deployment_name="demo-deployment",
+            memory_percent=80,
+        )
+        incident = self.manager.create_incident(
+            trend_data=trend,
+            recommended_action="INVESTIGATE_POD",
+            confidence=80,
+        )
+
+        updated = self.manager.update_incident_status(
+            incident.id, "REJECTED"
+        )
+
+        self.assertTrue(updated)
+        self.assertEqual(incident.status, "REJECTED")
+        self.assertNotIn(incident, self.manager.get_pending_incidents())
+
     def test_unknown_incident_returns_false(self):
         self.assertFalse(
             self.manager.update_incident_status(
@@ -163,5 +184,55 @@ class TestRiskManager(unittest.TestCase):
             )
 
 
+
+
+class TestActionPlanner(unittest.TestCase):
+    from app.predictor.action_planner import ActionPlanner, ActionType
+
+    def test_no_action_below_threshold(self):
+        result = self.ActionPlanner.propose_action(19, "NORMAL", 0, 45, 0)
+        self.assertIsNone(result)
+
+    def test_high_memory_rising_trend_recommends_scale(self):
+        result = self.ActionPlanner.propose_action(45, "MEDIUM", 2, 75, 3)
+        self.assertEqual(result["action"], "SCALE_DEPLOYMENT")
+        self.assertEqual(result["parameters"]["scale_increase_percent"], 50)
+        self.assertEqual(result["confidence"], 80.0)
+
+    def test_high_memory_with_restarts_recommends_memory_limit(self):
+        result = self.ActionPlanner.propose_action(45, "MEDIUM", 4, 85, 0)
+        self.assertEqual(result["action"], "INCREASE_MEMORY_LIMIT")
+        self.assertEqual(result["parameters"]["memory_limit_increase_percent"], 30)
+        self.assertEqual(result["confidence"], 75.0)
+
+    def test_excessive_restarts_recommends_log_investigation(self):
+        result = self.ActionPlanner.propose_action(35, "LOW", 6, 50, 0)
+        self.assertEqual(result["action"], "INVESTIGATE_LOGS")
+        self.assertEqual(result["parameters"]["lines"], 100)
+        self.assertEqual(result["confidence"], 90.0)
+
+    def test_generic_high_risk_recommends_scale(self):
+        result = self.ActionPlanner.propose_action(60, "HIGH", 0, 50, 0)
+        self.assertEqual(result["action"], "SCALE_DEPLOYMENT")
+        self.assertEqual(result["parameters"]["scale_increase_percent"], 30)
+        self.assertEqual(result["confidence"], 65.0)
+
+    def test_medium_risk_recommends_log_investigation(self):
+        result = self.ActionPlanner.propose_action(40, "MEDIUM", 0, 50, 0)
+        self.assertEqual(result["action"], "INVESTIGATE_LOGS")
+        self.assertEqual(result["parameters"]["lines"], 50)
+        self.assertEqual(result["confidence"], 70.0)
+
+    def test_low_detected_risk_recommends_short_log_review(self):
+        result = self.ActionPlanner.propose_action(20, "LOW", 0, 50, 0)
+        self.assertEqual(result["action"], "INVESTIGATE_LOGS")
+        self.assertEqual(result["parameters"]["lines"], 30)
+        self.assertEqual(result["confidence"], 50.0)
+
+    def test_validate_action_accepts_known_action(self):
+        self.assertTrue(self.ActionPlanner.validate_action("SCALE_DEPLOYMENT"))
+
+    def test_validate_action_rejects_unknown_action(self):
+        self.assertFalse(self.ActionPlanner.validate_action("DELETE_CLUSTER"))
 if __name__ == "__main__":
     unittest.main()
