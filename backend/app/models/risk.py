@@ -1,5 +1,5 @@
-from datetime import datetime
-from dataclasses import dataclass
+from datetime import datetime, timezone
+from dataclasses import dataclass, field
 from typing import List
 
 @dataclass
@@ -10,18 +10,17 @@ class Metric:
     
 @dataclass
 class TrendData:
-    """Trend information for one pod"""
+    """Trend data for a pod's resource usage"""
     namespace: str
     pod_name: str
     deployment_name: str
-    
     metrics_history: List[Metric]
-    risk_score: float  # 0-100
-    risk_level: str  # "NORMAL", "LOW", "MEDIUM", "HIGH", "CRITICAL"
-    
-    last_updated: datetime
-    created_at: datetime
-
+    risk_score: float
+    risk_level: str
+    # ← All fields with defaults must come after fields without defaults
+    restart_count: int = 0
+    last_updated: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 @dataclass
 class RiskIncident:
     """A risk that requires action"""

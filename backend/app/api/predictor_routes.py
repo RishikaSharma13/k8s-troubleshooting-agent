@@ -61,15 +61,17 @@ async def recommend_action(incident_id: str = Query(...)) -> dict:
     memory_values = [m.value for m in trend_data.metrics_history]
     slope, _ = collector.trend_detector.calculate_trend(memory_values)
     
+    # Get actual restart_count from trend data
+    actual_restart_count = trend_data.restart_count
+    
     # Propose action
     action = ActionPlanner.propose_action(
         risk_score=trend_data.risk_score,
         risk_level=trend_data.risk_level,
-        restart_count=0,  # Would need to fetch from pod inspector
+        restart_count=actual_restart_count,
         memory_percent=memory_values[-1] if memory_values else 0,
         trend_slope=slope
     )
-    
     if not action:
         return {
             "status": "success",
@@ -86,6 +88,7 @@ async def recommend_action(incident_id: str = Query(...)) -> dict:
         "namespace": trend_data.namespace,
         "risk_score": round(trend_data.risk_score, 2),
         "risk_level": trend_data.risk_level,
+        "restart_count": actual_restart_count,
         "recommendation": action
     }
 

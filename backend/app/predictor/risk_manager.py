@@ -46,6 +46,7 @@ class RiskManager:
                 metrics_history=[],
                 risk_score=0.0,
                 risk_level="NORMAL",
+                restart_count=0,
                 last_updated=now,
                 created_at=now,
             )
@@ -71,6 +72,7 @@ class RiskManager:
             restart_count=restart_count,
         )
         trend.risk_level = TrendDetector.get_risk_level(trend.risk_score)
+        trend.restart_count = restart_count
         trend.last_updated = now
 
         logger.info(
@@ -126,6 +128,20 @@ class RiskManager:
             for incident in self.incidents.values()
             if incident.status == "PENDING"
         ]
+    def get_pending_incident_for_pod(
+        self,
+        namespace: str,
+        pod_name: str,
+    ) -> Optional[RiskIncident]:
+        """Return the pending incident for a pod, if one exists."""
+        for incident in self.incidents.values():
+            if (
+                incident.status == "PENDING"
+                and incident.trend_data.namespace == namespace
+                and incident.trend_data.pod_name == pod_name
+            ):
+                return incident
+        return None
 
     def update_incident_status(
         self,
