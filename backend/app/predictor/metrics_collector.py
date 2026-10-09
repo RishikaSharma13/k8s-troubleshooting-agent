@@ -3,6 +3,7 @@ from datetime import datetime
 from loguru import logger
 
 from app.kubernetes.kubectl_executor import KubectlExecutor
+from app.models.database import SessionLocal, MetricsHistory
 from app.models.risk import Metric, TrendData
 from app.predictor.trend_detector import TrendDetector
 from app.predictor.risk_manager import RiskManager

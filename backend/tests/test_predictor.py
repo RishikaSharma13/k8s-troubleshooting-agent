@@ -1,9 +1,9 @@
-
 import unittest
-
 from app.predictor.trend_detector import TrendDetector
 from app.predictor.risk_manager import RiskManager
 from app.predictor.metrics_collector import MetricsCollector
+from app.models.database import SessionLocal, Incident
+
 
 class TestTrendDetector(unittest.TestCase):
 
@@ -63,6 +63,14 @@ class TestTrendDetector(unittest.TestCase):
 class TestRiskManager(unittest.TestCase):
 
     def setUp(self):
+        # 🔥 CRITICAL: Clear database before each test
+        db = SessionLocal()
+        try:
+            db.query(Incident).delete()
+            db.commit()
+        finally:
+            db.close()
+        
         self.manager = RiskManager()
 
     def test_first_metric_creates_trend(self):
@@ -125,8 +133,16 @@ class TestRiskManager(unittest.TestCase):
         )
 
         self.assertEqual(incident.status, "PENDING")
-        self.assertEqual(self.manager.get_incident(incident.id), incident)
-        self.assertIn(incident, self.manager.get_pending_incidents())
+        
+        # 🔥 FIX: Fetch fresh from database instead of using stale object
+        fresh = self.manager.get_incident(incident.id)
+        self.assertIsNotNone(fresh)
+        self.assertEqual(fresh.status, "PENDING")
+        
+        # 🔥 FIX: Check in list of pending incidents
+        pending = self.manager.get_pending_incidents()
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0].id, incident.id)
 
     def test_incident_status_update(self):
         trend = self.manager.update_pod_metrics(
@@ -146,8 +162,14 @@ class TestRiskManager(unittest.TestCase):
         )
 
         self.assertTrue(updated)
-        self.assertEqual(incident.status, "APPROVED")
-        self.assertNotIn(incident, self.manager.get_pending_incidents())
+        
+        # 🔥 FIX: Fetch fresh from database after update
+        fresh = self.manager.get_incident(incident.id)
+        self.assertEqual(fresh.status, "APPROVED")
+        
+        # 🔥 FIX: Verify not in pending list anymore
+        pending = self.manager.get_pending_incidents()
+        self.assertEqual(len(pending), 0)
 
     def test_incident_can_be_rejected(self):
         trend = self.manager.update_pod_metrics(
@@ -167,8 +189,14 @@ class TestRiskManager(unittest.TestCase):
         )
 
         self.assertTrue(updated)
-        self.assertEqual(incident.status, "REJECTED")
-        self.assertNotIn(incident, self.manager.get_pending_incidents())
+        
+        # 🔥 FIX: Fetch fresh from database after update
+        fresh = self.manager.get_incident(incident.id)
+        self.assertEqual(fresh.status, "REJECTED")
+        
+        # 🔥 FIX: Verify not in pending list anymore
+        pending = self.manager.get_pending_incidents()
+        self.assertEqual(len(pending), 0)
 
     def test_unknown_incident_returns_false(self):
         self.assertFalse(
@@ -182,8 +210,6 @@ class TestRiskManager(unittest.TestCase):
             self.manager.update_incident_status(
                 "missing-id", "UNKNOWN"
             )
-
-
 
 
 class TestActionPlanner(unittest.TestCase):
@@ -235,7 +261,17 @@ class TestActionPlanner(unittest.TestCase):
     def test_validate_action_rejects_unknown_action(self):
         self.assertFalse(self.ActionPlanner.validate_action("DELETE_CLUSTER"))
 
+
 class TestMetricsCollectorIncidents(unittest.TestCase):
+
+    def setUp(self):
+        # 🔥 CRITICAL: Clear database before each test
+        db = SessionLocal()
+        try:
+            db.query(Incident).delete()
+            db.commit()
+        finally:
+            db.close()
 
     def _create_collector(self):
         collector = MetricsCollector()
@@ -260,6 +296,7 @@ class TestMetricsCollectorIncidents(unittest.TestCase):
         self.assertEqual(result["pods_scanned"], 1)
         self.assertEqual(len(result["risks"]), 1)
 
+        # 🔥 FIX: Query fresh from database
         incidents = collector.get_pending_incidents()
 
         self.assertEqual(len(incidents), 1)
@@ -278,8 +315,10 @@ class TestMetricsCollectorIncidents(unittest.TestCase):
         self.assertEqual(len(first_result["risks"]), 1)
         self.assertEqual(len(second_result["risks"]), 1)
 
+        # 🔥 FIX: Query fresh from database
         incidents = collector.get_pending_incidents()
 
+        # 🔥 FIX: Should be 1, not 2 (because setUp clears DB)
         self.assertEqual(len(incidents), 1)
 
 

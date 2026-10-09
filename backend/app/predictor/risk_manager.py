@@ -1,4 +1,5 @@
-
+from sqlalchemy.orm import Session
+from app.models.database import SessionLocal, Incident, Execution
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 import uuid
@@ -6,17 +7,17 @@ import uuid
 from loguru import logger
 
 from app.models.risk import TrendData, RiskIncident, Metric
+from app.models.database import SessionLocal, Incident
 from app.predictor.trend_detector import TrendDetector
 
 
 class RiskManager:
-    """Manages pod risk tracking and incident creation."""
+    """Manages pod risk tracking and persistent incident storage."""
 
     def __init__(self):
-        # In-memory storage for the initial implementation.
-        # A persistent store can be added in a later phase.
+        # Trend data remains in memory because it is used for
+        # short-term trend calculation.
         self.trends: Dict[str, TrendData] = {}
-        self.incidents: Dict[str, RiskIncident] = {}
         self.max_history = 10
 
     def update_pod_metrics(
@@ -53,19 +54,15 @@ class RiskManager:
 
         trend = self.trends[key]
 
-        # Store the new reading.
         trend.metrics_history.append(
             Metric(timestamp=now, value=memory_percent)
         )
 
-        # Keep only the latest readings.
         trend.metrics_history = trend.metrics_history[-self.max_history:]
 
-        # Calculate trend from the recent metric values.
         values = [metric.value for metric in trend.metrics_history]
         slope, direction = TrendDetector.calculate_trend(values)
 
-        # Calculate the risk score and risk level.
         trend.risk_score = TrendDetector.calculate_risk_score(
             current_value=memory_percent,
             trend_slope=slope,
@@ -89,66 +86,169 @@ class RiskManager:
 
         return trend
 
+    @staticmethod
+    def _to_risk_incident(db_incident: Incident) -> RiskIncident:
+        """Convert a database Incident into the application's RiskIncident."""
+
+        created_at = db_incident.created_at
+
+        # PostgreSQL DateTime may return a naive datetime.
+        # Normalize it to UTC for the application model.
+        if created_at is not None and created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+
+        trend_data = TrendData(
+            namespace=db_incident.namespace,
+            pod_name=db_incident.pod_name,
+            deployment_name=db_incident.deployment,
+            metrics_history=[],
+            risk_score=db_incident.risk_score,
+            risk_level=db_incident.risk_level,
+            restart_count=0,
+            last_updated=created_at or datetime.now(timezone.utc),
+            created_at=created_at or datetime.now(timezone.utc),
+        )
+
+        return RiskIncident(
+            id=db_incident.id,
+            trend_data=trend_data,
+            recommended_action=db_incident.recommended_action or "",
+            confidence=db_incident.confidence or 0.0,
+            status=db_incident.status,
+            created_at=created_at or datetime.now(timezone.utc),
+        )
+
     def create_incident(
         self,
         trend_data: TrendData,
         recommended_action: str,
         confidence: float,
+        reasoning: str = "",  # 🆕 Added
     ) -> RiskIncident:
-        """Create a risk incident."""
+        """Create and persist a risk incident."""
 
         if not 0 <= confidence <= 100:
             raise ValueError("confidence must be between 0 and 100")
 
-        incident = RiskIncident(
-            id=str(uuid.uuid4()),
-            trend_data=trend_data,
+        incident_id = str(uuid.uuid4())
+        created_at = datetime.now(timezone.utc)
+
+        db_incident = Incident(
+            id=incident_id,
+            pod_name=trend_data.pod_name,
+            deployment=trend_data.deployment_name,
+            namespace=trend_data.namespace,
+            risk_score=trend_data.risk_score,
+            risk_level=trend_data.risk_level,
+            status="PENDING",
             recommended_action=recommended_action,
             confidence=confidence,
-            status="PENDING",
-            created_at=datetime.now(timezone.utc),
+            reasoning=reasoning,  # 🆕 Added
+            created_at=created_at,
         )
 
-        self.incidents[incident.id] = incident
-        logger.info(
-            "Created incident {}: {}",
-            incident.id,
-            recommended_action,
-        )
-        return incident
+        db = SessionLocal()
 
-    def get_incident(self, incident_id: str) -> Optional[RiskIncident]:
-        """Get an incident by ID."""
-        return self.incidents.get(incident_id)
+        try:
+            db.add(db_incident)
+            db.commit()
+            db.refresh(db_incident)
+
+            logger.info(
+                "Created incident {}: {}",
+                db_incident.id,
+                recommended_action,
+            )
+
+            return self._to_risk_incident(db_incident)
+
+        except Exception:
+            db.rollback()
+            logger.exception("Failed to create incident")
+            raise
+
+        finally:
+            db.close()
+
+    def get_incident(
+        self,
+        incident_id: str,
+    ) -> Optional[RiskIncident]:
+        """Get an incident from PostgreSQL."""
+
+        db = SessionLocal()
+
+        try:
+            incident = (
+                db.query(Incident)
+                .filter(Incident.id == incident_id)
+                .first()
+            )
+
+            if incident is None:
+                return None
+
+            return self._to_risk_incident(incident)
+
+        finally:
+            db.close()
 
     def get_pending_incidents(self) -> List[RiskIncident]:
-        """Get all pending incidents."""
-        return [
-            incident
-            for incident in self.incidents.values()
-            if incident.status == "PENDING"
-        ]
+        """Get all pending incidents from PostgreSQL."""
+
+        db = SessionLocal()
+
+        try:
+            incidents = (
+                db.query(Incident)
+                .filter(Incident.status == "PENDING")
+                .order_by(Incident.created_at.asc())
+                .all()
+            )
+
+            return [
+                self._to_risk_incident(incident)
+                for incident in incidents
+            ]
+
+        finally:
+            db.close()
+
     def get_pending_incident_for_pod(
         self,
         namespace: str,
         pod_name: str,
     ) -> Optional[RiskIncident]:
-        """Return the pending incident for a pod, if one exists."""
-        for incident in self.incidents.values():
-            if (
-                incident.status == "PENDING"
-                and incident.trend_data.namespace == namespace
-                and incident.trend_data.pod_name == pod_name
-            ):
-                return incident
-        return None
+        """Return the latest pending incident for a pod."""
+
+        db = SessionLocal()
+
+        try:
+            incident = (
+                db.query(Incident)
+                .filter(
+                    Incident.status == "PENDING",
+                    Incident.namespace == namespace,
+                    Incident.pod_name == pod_name,
+                )
+                .order_by(Incident.created_at.desc())
+                .first()
+            )
+
+            if incident is None:
+                return None
+
+            return self._to_risk_incident(incident)
+
+        finally:
+            db.close()
 
     def update_incident_status(
         self,
         incident_id: str,
         status: str,
     ) -> bool:
-        """Update an incident's status."""
+        """Update an incident's status in PostgreSQL."""
 
         allowed_statuses = {
             "PENDING",
@@ -165,10 +265,43 @@ class RiskManager:
                 f"Allowed statuses: {sorted(allowed_statuses)}"
             )
 
-        incident = self.incidents.get(incident_id)
-        if incident is None:
-            return False
+        db = SessionLocal()
 
-        incident.status = status
-        logger.info("Incident {} status: {}", incident_id, status)
-        return True
+        try:
+            incident = (
+                db.query(Incident)
+                .filter(Incident.id == incident_id)
+                .first()
+            )
+
+            if incident is None:
+                return False
+
+            incident.status = status
+
+            if status == "APPROVED":
+                incident.approved_at = datetime.now(timezone.utc)
+
+            if status == "RESOLVED":
+                incident.resolved_at = datetime.now(timezone.utc)
+
+            db.commit()
+
+            logger.info(
+                "Incident {} status: {}",
+                incident_id,
+                status,
+            )
+
+            return True
+
+        except Exception:
+            db.rollback()
+            logger.exception(
+                "Failed to update incident {}",
+                incident_id,
+            )
+            raise
+
+        finally:
+            db.close()
