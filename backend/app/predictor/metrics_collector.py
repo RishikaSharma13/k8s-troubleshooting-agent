@@ -6,6 +6,7 @@ from app.kubernetes.kubectl_executor import KubectlExecutor
 from app.models.database import SessionLocal, MetricsHistory
 from app.models.risk import Metric, TrendData
 from app.predictor.trend_detector import TrendDetector
+from app.predictor.forecaster import Forecaster
 from app.predictor.risk_manager import RiskManager
 
 
@@ -20,6 +21,7 @@ class MetricsCollector:
         )
         self.risk_manager = RiskManager()
         self.trend_detector = TrendDetector()
+        self.forecaster = Forecaster()
         logger.info("MetricsCollector initialized")
 
     def scan_namespace(self, namespace: str = "default") -> Dict:

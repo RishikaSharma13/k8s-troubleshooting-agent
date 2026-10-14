@@ -1,5 +1,5 @@
 from sqlalchemy.orm import Session
-from app.models.database import SessionLocal, Incident, Execution
+from app.models.database import SessionLocal, Incident, Execution, MetricsHistory
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 import uuid
@@ -7,7 +7,6 @@ import uuid
 from loguru import logger
 
 from app.models.risk import TrendData, RiskIncident, Metric
-from app.models.database import SessionLocal, Incident
 from app.predictor.trend_detector import TrendDetector
 
 
@@ -49,7 +48,6 @@ class RiskManager:
                 risk_level="NORMAL",
                 restart_count=0,
                 last_updated=now,
-                created_at=now,
             )
 
         trend = self.trends[key]
@@ -84,6 +82,25 @@ class RiskManager:
             trend.risk_level,
         )
 
+        # Save metrics to database for forecasting
+        try:
+            db = SessionLocal()
+            metric_record = MetricsHistory(
+                pod_name=pod_name,
+                namespace=namespace,
+                deployment=deployment_name,
+                memory_percent=memory_percent,
+                cpu_percent=0.0,
+                restart_count=restart_count,
+                risk_score=trend.risk_score,
+                recorded_at=now,
+            )
+            db.add(metric_record)
+            db.commit()
+            db.close()
+            logger.info(f"Saved metrics for {namespace}/{pod_name} to database")
+        except Exception as e:
+            logger.error(f"Failed to save metrics to database: {e}")
         return trend
 
     @staticmethod
@@ -106,7 +123,6 @@ class RiskManager:
             risk_level=db_incident.risk_level,
             restart_count=0,
             last_updated=created_at or datetime.now(timezone.utc),
-            created_at=created_at or datetime.now(timezone.utc),
         )
 
         return RiskIncident(
@@ -115,7 +131,7 @@ class RiskManager:
             recommended_action=db_incident.recommended_action or "",
             confidence=db_incident.confidence or 0.0,
             status=db_incident.status,
-            created_at=created_at or datetime.now(timezone.utc),
+            created_at=created_at,
         )
 
     def create_incident(
@@ -144,7 +160,6 @@ class RiskManager:
             recommended_action=recommended_action,
             confidence=confidence,
             reasoning=reasoning,  # 🆕 Added
-            created_at=created_at,
         )
 
         db = SessionLocal()
@@ -305,3 +320,37 @@ class RiskManager:
 
         finally:
             db.close()
+
+    def get_all_pods_in_namespace(self, namespace):
+        """Get all pods in a namespace"""
+        try:
+            db = SessionLocal()
+            # Get distinct pod names (using order_by to get most recent)
+            pods = db.query(MetricsHistory).filter(
+                MetricsHistory.namespace == namespace
+            ).order_by(MetricsHistory.pod_name, MetricsHistory.recorded_at.desc()).distinct(MetricsHistory.pod_name).all()
+            db.close()
+            
+            return list(set([
+                p.pod_name
+                for p in pods
+            ]))
+        except Exception as e:
+            logger.error(f"get_all_pods failed: {e}")
+            return []
+
+    def get_pod_metrics_history(self, pod_name, namespace, limit=100):
+        """Get historical metrics for a pod"""
+        try:
+            db = SessionLocal()
+            metrics = db.query(MetricsHistory).filter(
+                MetricsHistory.pod_name == pod_name,
+                MetricsHistory.namespace == namespace
+            ).order_by(MetricsHistory.recorded_at.desc()).limit(limit).all()
+            db.close()
+            
+            # Return in chronological order (oldest first)
+            return list(reversed(metrics))
+        except Exception as e:
+            logger.error(f"get_pod_metrics_history failed: {e}")
+            return []

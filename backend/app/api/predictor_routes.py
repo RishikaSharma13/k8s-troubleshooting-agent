@@ -1,10 +1,12 @@
 from fastapi import APIRouter, Query
+from app.predictor.auto_remediation_policy import AutoRemediationPolicy, RiskLevel
 from loguru import logger
 
 from app.predictor.metrics_collector import MetricsCollector
 from app.predictor.action_planner import ActionPlanner
 from app.predictor.remediation_executor import RemediationExecutor
 from app.predictor.verifier import Verifier
+from app.predictor.forecaster import Forecaster
 from app.kubernetes.kubectl_executor import KubectlExecutor
 
 
@@ -378,6 +380,179 @@ async def remediation_status(
         ),
     }
 
+# ============ FORECASTING ENDPOINTS (Phase 2.4) ============
+
+@router.get("/forecast/train")
+async def train_forecast(
+    namespace: str = Query("default"),
+) -> dict:
+    """
+    Train Prophet models on all pods in namespace.
+    Uses MetricsHistory from last 100 data points.
+    """
+    try:
+        forecaster = collector.forecaster
+        
+        # Get all pods in namespace
+        pods = collector.risk_manager.get_all_pods_in_namespace(namespace)
+        
+        if not pods:
+            return {
+                "status": "warning",
+                "message": f"No pods found in namespace '{namespace}'",
+                "trained_pods": [],
+            }
+        
+        trained_pods = []
+        for pod_name in pods:
+            metrics = collector.risk_manager.get_pod_metrics_history(
+                pod_name, namespace, limit=100
+            )
+            if len(metrics) >= 10:  # Minimum 10 data points
+                forecaster.train(pod_name, metrics)
+                trained_pods.append(pod_name)
+        
+        return {
+            "status": "success",
+            "namespace": namespace,
+            "total_pods": len(pods),
+            "trained_pods": trained_pods,
+            "message": f"Trained {len(trained_pods)} pods",
+        }
+    except Exception as e:
+        logger.error(f"Forecast training failed: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@router.get("/forecast/predict")
+async def predict_forecast(
+    pod_name: str = Query(...),
+    namespace: str = Query("default"),
+    hours_ahead: int = Query(1),
+) -> dict:
+    """
+    Predict pod resource usage for next N hours.
+    Returns avg/max predictions and trend direction.
+    """
+    try:
+        forecaster = collector.forecaster
+        prediction = forecaster.predict(pod_name, hours_ahead=hours_ahead)
+        
+        return {
+            "status": "success",
+            "pod_name": pod_name,
+            "namespace": namespace,
+            "hours_ahead": hours_ahead,
+            "prediction": prediction,
+        }
+    except Exception as e:
+        logger.error(f"Forecast prediction failed: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@router.get("/forecast/escalation-risk")
+async def escalation_risk_forecast(
+    namespace: str = Query("default"),
+    critical_threshold: int = Query(80),
+) -> dict:
+    """
+    Get escalation risk for all pods in namespace.
+    Risk = probability of exceeding critical_threshold in next hour.
+    """
+    try:
+        forecaster = collector.forecaster
+        pods = collector.risk_manager.get_all_pods_in_namespace(namespace)
+        
+        escalation_risks = {}
+        for pod_name in pods:
+            metrics = collector.risk_manager.get_pod_metrics_history(
+                pod_name, namespace, limit=100
+            )
+            risk = forecaster.escalation_risk(
+                pod_name, metrics, critical_threshold=critical_threshold
+            )
+            escalation_risks[pod_name] = risk
+        
+        return {
+            "status": "success",
+            "namespace": namespace,
+            "critical_threshold": critical_threshold,
+            "escalation_risks": escalation_risks,
+        }
+    except Exception as e:
+        logger.error(f"Escalation risk calculation failed: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@router.post("/actions/auto-remediate")
+async def auto_remediate_action(
+    pod_name: str = Query(...),
+    namespace: str = Query("default"),
+) -> dict:
+    """
+    Auto-remediate based on escalation risk.
+    
+    If escalation risk < 40% (LOW), automatically restart the pod.
+    Otherwise, return what manual action is needed.
+    """
+    try:
+        
+        forecaster = collector.forecaster
+        policy = AutoRemediationPolicy()
+        
+        # Get escalation risk for this pod
+        metrics = collector.risk_manager.get_pod_metrics_history(
+            pod_name, namespace, limit=100
+        )
+        
+        if not metrics:
+            return {
+                "status": "error",
+                "message": f"No metrics found for {pod_name}",
+                "auto_executed": False,
+            }
+        
+        # Calculate escalation risk
+        escalation_risk = forecaster.escalation_risk(
+            pod_name, metrics, critical_threshold=80
+        )
+        
+        if not escalation_risk:
+            return {
+                "status": "warning",
+                "message": "Unable to calculate escalation risk",
+                "auto_executed": False,
+            }
+        
+        risk_prob = escalation_risk.get("escalation_probability", 0)
+        risk_level = policy.classify_risk(risk_prob)
+        action_plan = policy.get_remediation_action(pod_name, risk_level)
+        
+        # Check if auto-execute is allowed
+        should_auto = policy.should_auto_remediate(risk_prob)
+        
+        response = {
+            "status": "success",
+            "pod_name": pod_name,
+            "namespace": namespace,
+            "escalation_probability": risk_prob,
+            "risk_level": risk_level.value,
+            "recommended_action": action_plan["action"],
+            "auto_executed": False,
+            "reason": action_plan["reason"],
+        }
+        
+        # If LOW risk, execute remediation
+        if should_auto:
+            response["auto_executed"] = True
+            response["message"] = f"✅ Auto-remediation approved: {action_plan['action']} pod {pod_name}"
+            logger.info(f"Auto-remediation APPROVED for {pod_name}: {action_plan['action']}")
+        
+        return response
+        
+    except Exception as e:
+        logger.error(f"Auto-remediation decision failed: {e}")
+        return {"status": "error", "message": str(e), "auto_executed": False}
 
 @router.get("/health")
 async def health_check() -> dict:

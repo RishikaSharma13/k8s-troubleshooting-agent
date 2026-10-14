@@ -70,9 +70,9 @@ class ActionPlanner:
             return {
                 "action": ActionType.INCREASE_MEMORY_LIMIT.value,
                 "parameters": {
-                    "memory_limit_increase_percent": 40,
+                    "memory_limit_increase_percent": 30,
                 },
-                "confidence": 85.0,
+                "confidence": 75.0,
                 "reasoning": f"Memory at {memory_percent:.1f}% with {restart_count} restarts indicates repeated OOMKills. Increase memory limit.",
             }
         
