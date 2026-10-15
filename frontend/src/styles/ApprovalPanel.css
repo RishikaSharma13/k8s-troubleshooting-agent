@@ -1,0 +1,88 @@
+.approval-panel {
+  background: white;
+  border-radius: 8px;
+  padding: 1.5rem;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+}
+
+.approval-panel h3 {
+  margin: 0 0 1rem 0;
+  color: #333;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.incident-details {
+  background: #f9f9f9;
+  padding: 1rem;
+  border-radius: 6px;
+  margin-bottom: 1.5rem;
+}
+
+.incident-details p {
+  margin: 0.5rem 0;
+  color: #555;
+  font-size: 14px;
+}
+
+.incident-details strong {
+  color: #333;
+  font-weight: 600;
+}
+
+.approval-buttons {
+  display: flex;
+  gap: 10px;
+}
+
+.btn-approve,
+.btn-reject {
+  flex: 1;
+  padding: 10px;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 14px;
+  transition: all 0.2s ease;
+}
+
+.btn-approve {
+  background: #4ade80;
+  color: white;
+}
+
+.btn-approve:hover:not(:disabled) {
+  background: #22c55e;
+  transform: translateY(-2px);
+}
+
+.btn-approve:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.btn-reject {
+  background: #ef4444;
+  color: white;
+}
+
+.btn-reject:hover:not(:disabled) {
+  background: #dc2626;
+  transform: translateY(-2px);
+}
+
+.btn-reject:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+@media (max-width: 768px) {
+  .approval-panel {
+    padding: 1rem;
+  }
+
+  .approval-buttons {
+    flex-direction: column;
+  }
+}
