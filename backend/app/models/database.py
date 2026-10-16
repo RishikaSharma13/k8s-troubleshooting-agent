@@ -1,4 +1,5 @@
 from sqlalchemy import create_engine, Column, String, Integer, Float, DateTime, ForeignKey, Enum
+from sqlalchemy import BigInteger, Index, UniqueConstraint, func
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 from datetime import datetime
 import os
@@ -130,6 +131,41 @@ class MetricsHistory(Base):
     
     def __repr__(self):
         return f"<MetricsHistory {self.pod_name} @ {self.recorded_at}>"
+
+# ============================================================
+# TABLE 4: Memory Samples (measured data for forecasting)
+# ============================================================
+class MemorySample(Base):
+    """One container memory reading from the Kubernetes Metrics API.
+
+    Only real measurements are stored: no estimates or fallback values.
+    metric_timestamp is when Metrics Server measured the value (not when we
+    polled), and the unique constraint stores each reading exactly once.
+    """
+    __tablename__ = "memory_samples"
+
+    id = Column(BigInteger, primary_key=True)
+
+    namespace = Column(String(255), nullable=False)
+    pod = Column(String(255), nullable=False)
+    container = Column(String(255), nullable=False)
+    deployment = Column(String(255), nullable=True)  # None if not owned by a Deployment
+
+    metric_timestamp = Column(DateTime(timezone=True), nullable=False)
+    window_seconds = Column(Float, nullable=True)
+    memory_bytes = Column(BigInteger, nullable=False)        # working set
+    memory_limit_bytes = Column(BigInteger, nullable=True)   # None if no limit set
+
+    collected_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("namespace", "pod", "container", "metric_timestamp",
+                         name="uq_memory_samples_reading"),
+        Index("ix_memory_samples_workload_time", "namespace", "deployment", "metric_timestamp"),
+    )
+
+    def __repr__(self):
+        return f"<MemorySample {self.namespace}/{self.pod}/{self.container} @ {self.metric_timestamp}>"
 
 # ============================================================
 # Dependency Injection (for FastAPI)
