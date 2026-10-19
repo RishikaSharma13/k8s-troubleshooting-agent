@@ -168,6 +168,43 @@ class MemorySample(Base):
         return f"<MemorySample {self.namespace}/{self.pod}/{self.container} @ {self.metric_timestamp}>"
 
 # ============================================================
+# TABLE 5: Container Terminations (ground truth for prediction)
+# ============================================================
+class ContainerTermination(Base):
+    """One observed container termination, e.g. an OOMKill.
+
+    Read from the pod status (state.terminated / lastState.terminated). This is
+    the ground truth that memory forecasts are scored against. restart_count is
+    the value seen at observation time, so gaps (missed terminations between
+    polls) can be detected later.
+    """
+    __tablename__ = "container_terminations"
+
+    id = Column(BigInteger, primary_key=True)
+
+    namespace = Column(String(255), nullable=False)
+    pod = Column(String(255), nullable=False)
+    container = Column(String(255), nullable=False)
+    deployment = Column(String(255), nullable=True)
+
+    reason = Column(String(100), nullable=True)      # e.g. OOMKilled, Completed, Error
+    exit_code = Column(Integer, nullable=True)
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    finished_at = Column(DateTime(timezone=True), nullable=False)
+    restart_count = Column(Integer, nullable=True)
+
+    observed_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("namespace", "pod", "container", "finished_at",
+                         name="uq_container_terminations_event"),
+        Index("ix_container_terminations_workload_time", "namespace", "deployment", "finished_at"),
+    )
+
+    def __repr__(self):
+        return f"<ContainerTermination {self.namespace}/{self.pod}/{self.container} {self.reason} @ {self.finished_at}>"
+
+# ============================================================
 # Dependency Injection (for FastAPI)
 # ============================================================
 def get_db():

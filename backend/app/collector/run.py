@@ -2,7 +2,7 @@
 
 Usage (from the repository root):
     PYTHONPATH=backend python -m app.collector.run --namespace default --interval 15
-    PYTHONPATH=backend python -m app.collector.run --namespace default --cycles 4
+    PYTHONPATH=backend python -m app.collector.run --namespace default --namespace predict-lab
 
 Writes to the database named by DATABASE_URL. Stop with Ctrl+C.
 """
@@ -18,23 +18,26 @@ from app.models.database import engine
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Collect container memory samples from the Metrics API.")
-    parser.add_argument("--namespace", default="default")
+    parser.add_argument("--namespace", action="append", dest="namespaces",
+                        help="namespace to collect (repeat for several; default: default)")
     parser.add_argument("--interval", type=float, default=15.0,
                         help="seconds between cycles (default 15, Metrics Server's resolution in this lab)")
     parser.add_argument("--cycles", type=int, default=0, help="stop after N cycles (default: run until Ctrl+C)")
     args = parser.parse_args(argv)
     if args.interval < 1:
         parser.error("--interval must be at least 1 second")
+    namespaces = args.namespaces or ["default"]
 
-    logger.info("Memory collector starting: namespace={} interval={}s database={}",
-                args.namespace, args.interval, make_url(str(engine.url)).database)
+    logger.info("Memory collector starting: namespaces={} interval={}s database={}",
+                namespaces, args.interval, make_url(str(engine.url)).database)
     collector = MemoryCollector()
     cycle = 0
     try:
         while True:
             started = time.monotonic()
             cycle += 1
-            collector.collect_once(args.namespace)
+            for namespace in namespaces:
+                collector.collect_once(namespace)
             if args.cycles and cycle >= args.cycles:
                 break
             time.sleep(max(0.0, args.interval - (time.monotonic() - started)))
