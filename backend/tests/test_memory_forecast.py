@@ -142,3 +142,15 @@ class TestLoadSeries(unittest.TestCase):
         self.assertTrue(all(t <= at for t in s.times))
         self.assertIsNone(s.last_termination)       # the termination at 100 s is in the future
         self.assertEqual(len(s.times), 5)           # samples at 0 .. 60 s
+
+
+class TestForecastCurve(unittest.TestCase):
+    def test_predicted_value_at_offset(self):
+        times, values = ramp()                                  # 12 MiB/min, last value at 30 + 12*9.75 = 147 MiB
+        r = forecast_series(times, values, LIMIT, method="linear")
+        self.assertAlmostEqual(r.predicted_mib_at(300), 147 + 60, delta=0.5)   # 5 minutes later: +60 MiB
+        self.assertIsNone(r.predicted_mib_at(10_000))           # beyond the horizon
+
+    def test_no_curve_when_refusing(self):
+        times, values = ramp(n=5)
+        self.assertIsNone(forecast_series(times, values, LIMIT).predicted_mib_at(60))

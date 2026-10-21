@@ -55,6 +55,15 @@ class ForecastResult:
     eta_earliest_s: Optional[float] = None   # upper interval bound reaches the limit
     eta_latest_s: Optional[float] = None     # lower interval bound reaches the limit
     trend_bytes_per_min: Optional[float] = None
+    # The forecast curve itself (point estimate), for evaluation: offsets from window_end, values in MiB
+    future_offsets_s: list[float] = field(default_factory=list, repr=False)
+    future_point_mib: list[float] = field(default_factory=list, repr=False)
+
+    def predicted_mib_at(self, offset_s: float) -> Optional[float]:
+        """Point forecast (MiB) at offset_s seconds after window_end, interpolated; None if outside the curve."""
+        if not self.future_offsets_s or not (self.future_offsets_s[0] <= offset_s <= self.future_offsets_s[-1]):
+            return None
+        return float(np.interp(offset_s, self.future_offsets_s, self.future_point_mib))
 
     @property
     def current_percent(self) -> Optional[float]:
@@ -161,6 +170,7 @@ def forecast_series(
     else:
         raise ValueError(f"unknown method {method!r}")
 
+    result.future_offsets_s, result.future_point_mib = x_future.tolist(), np.asarray(point, dtype=float).tolist()
     result.eta_s = first_crossing(x_future, point, limit_mib)
     result.eta_earliest_s = first_crossing(x_future, upper, limit_mib)
     result.eta_latest_s = first_crossing(x_future, lower, limit_mib)
