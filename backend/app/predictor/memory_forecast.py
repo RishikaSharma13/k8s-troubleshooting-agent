@@ -40,6 +40,18 @@ INTERVAL_WIDTH = 0.80    # Prophet prediction interval; coverage is measured, no
 CHANGEPOINT_PRIOR_SCALE = 0.01
 
 
+@dataclass(frozen=True)
+class QualitySettings:
+    """Data-quality guard. Defaults suit memory (readings every ~15 s); other signals
+    arrive more slowly (disk is re-measured every ~70-100 s) and need their own."""
+    min_samples: int = MIN_SAMPLES
+    min_span_s: float = MIN_SPAN_S
+    max_gap_s: float = MAX_GAP_S
+
+
+MEMORY_QUALITY = QualitySettings()
+
+
 @dataclass
 class ForecastResult:
     status: str                              # crossing_predicted | no_crossing | insufficient_data | no_limit
@@ -87,16 +99,16 @@ class ForecastResult:
 # ------------------------------------------------------------------
 # Pure functions (unit-tested without a database)
 # ------------------------------------------------------------------
-def check_quality(times: Sequence[datetime]) -> Optional[str]:
+def check_quality(times: Sequence[datetime], quality: QualitySettings = MEMORY_QUALITY) -> Optional[str]:
     """Return a reason string if the series is unfit for forecasting, else None."""
-    if len(times) < MIN_SAMPLES:
-        return f"only {len(times)} samples (need {MIN_SAMPLES})"
+    if len(times) < quality.min_samples:
+        return f"only {len(times)} samples (need {quality.min_samples})"
     span = (times[-1] - times[0]).total_seconds()
-    if span < MIN_SPAN_S:
-        return f"span {span:.0f}s (need {MIN_SPAN_S:.0f}s)"
+    if span < quality.min_span_s:
+        return f"span {span:.0f}s (need {quality.min_span_s:.0f}s)"
     gaps = np.diff([t.timestamp() for t in times])
-    if gaps.size and gaps.max() > MAX_GAP_S:
-        return f"gap of {gaps.max():.0f}s in samples (max {MAX_GAP_S:.0f}s)"
+    if gaps.size and gaps.max() > quality.max_gap_s:
+        return f"gap of {gaps.max():.0f}s in samples (max {quality.max_gap_s:.0f}s)"
     return None
 
 
@@ -119,12 +131,15 @@ def forecast_series(
     method: str = "prophet",
     horizon_s: float = DEFAULT_HORIZON_S,
     step_s: float = DEFAULT_STEP_S,
+    quality: QualitySettings = MEMORY_QUALITY,
+    scale: float = MiB,
 ) -> ForecastResult:
     """Forecast one container's memory and estimate when it reaches its limit.
 
     times must be sorted, timezone-aware, and all from one container "life"
     (no restart in between). method: "prophet" or "linear" (least-squares line,
-    the simple baseline the evaluation compares against).
+    the simple baseline the evaluation compares against). quality sets the data
+    guard; scale is the unit values are fitted in (MiB for bytes, 1 for counts).
     """
     result = ForecastResult(status="insufficient_data", method=method, n_samples=len(times),
                             limit_bytes=limit_bytes, horizon_s=horizon_s)
@@ -134,16 +149,16 @@ def forecast_series(
     if not limit_bytes:
         result.status, result.reason = "no_limit", "container has no memory limit"
         return result
-    problem = check_quality(times)
+    problem = check_quality(times, quality)
     if problem:
         result.reason = problem
         return result
 
     t0 = times[-1]
     x_hist = np.array([(t - t0).total_seconds() for t in times])         # <= 0
-    y_hist = np.asarray(values_bytes, dtype=float) / MiB
+    y_hist = np.asarray(values_bytes, dtype=float) / scale
     x_future = np.arange(step_s, horizon_s + step_s / 2, step_s)
-    limit_mib = limit_bytes / MiB
+    limit_mib = limit_bytes / scale
 
     if method == "linear":
         slope, intercept = np.polyfit(x_hist, y_hist, 1)
@@ -152,7 +167,7 @@ def forecast_series(
         # Residual band at the same nominal width as Prophet's interval (z = 1.2816 for 80%)
         band = 1.2816 * float(np.std(resid, ddof=2)) if len(resid) > 2 else 0.0
         upper, lower = point + band, point - band
-        result.trend_bytes_per_min = slope * 60 * MiB
+        result.trend_bytes_per_min = slope * 60 * scale
     elif method == "prophet":
         import pandas as pd
         from prophet import Prophet
@@ -165,7 +180,7 @@ def forecast_series(
         future = pd.DataFrame({"ds": [naive[-1] + timedelta(seconds=float(s)) for s in x_future]})
         fc = model.predict(future)
         point, upper, lower = (fc[c].to_numpy() for c in ("yhat", "yhat_upper", "yhat_lower"))
-        result.trend_bytes_per_min = float(point[-1] - point[0]) / ((x_future[-1] - x_future[0]) / 60) * MiB \
+        result.trend_bytes_per_min = float(point[-1] - point[0]) / ((x_future[-1] - x_future[0]) / 60) * scale \
             if len(point) > 1 else None
     else:
         raise ValueError(f"unknown method {method!r}")

@@ -41,13 +41,15 @@ from typing import Callable, Optional, Sequence
 import numpy as np
 
 from app.predictor.memory_forecast import (
-    DEFAULT_HORIZON_S, DEFAULT_LOOKBACK_S, MAX_GAP_S, MIN_SAMPLES, MiB, forecast_series,
+    DEFAULT_HORIZON_S, DEFAULT_LOOKBACK_S, MAX_GAP_S, MEMORY_QUALITY, MIN_SAMPLES, MiB, QualitySettings,
+    forecast_series,
 )
 
 FORECAST_METHODS = ("prophet", "linear")
 DEFAULT_THRESHOLDS = (80, 90)
 CHECKPOINTS_S = (600, 300)
 VALUE_AHEAD_S = 300
+FAILURE_REASONS = ("OOMKilled", "Evicted")   # how a scored (positive) life ends
 DROP_SPLIT_BYTES = 100 * MiB   # a sudden drop this large without a recorded termination = unrecorded restart
 
 
@@ -67,6 +69,10 @@ class Life:
     @property
     def ends_in_oom(self) -> bool:
         return self.end_reason == "OOMKilled"
+
+    @property
+    def ends_in_failure(self) -> bool:
+        return self.end_reason in FAILURE_REASONS
 
 
 @dataclass
@@ -176,7 +182,8 @@ def value_at(times: Sequence[datetime], values: Sequence[int], at: datetime, max
 
 
 def evaluate_life(life: Life, case: str, step_s: float, horizon_s: float, lookback_s: float,
-                  methods: Sequence[str], thresholds: Sequence[int]) -> list[OriginRow]:
+                  methods: Sequence[str], thresholds: Sequence[int],
+                  quality: QualitySettings = MEMORY_QUALITY, value_gap_s: float = 45.0) -> list[OriginRow]:
     rows: list[OriginRow] = []
     limit_mib = (life.limit_bytes or 0) / MiB
     for i in origin_indices(life.times, step_s, life.end_time):
@@ -187,11 +194,11 @@ def evaluate_life(life: Life, case: str, step_s: float, horizon_s: float, lookba
         w_times, w_values = life.times[lo:i + 1], life.values[lo:i + 1]
         now_mib = life.values[i] / MiB
         tto = (life.end_time - t).total_seconds() if case == "positive" else None
-        actual5 = value_at(life.times, life.values, t + timedelta(seconds=VALUE_AHEAD_S))
+        actual5 = value_at(life.times, life.values, t + timedelta(seconds=VALUE_AHEAD_S), value_gap_s)
         base = dict(deployment=life.deployment, pod=life.pod, life_id=life.life_id, case=case, origin=t,
                     value_mib=now_mib, limit_mib=limit_mib, time_to_oom_s=tto, actual_5min_mib=actual5)
         for m in methods:
-            r = forecast_series(w_times, w_values, life.limit_bytes, method=m, horizon_s=horizon_s)
+            r = forecast_series(w_times, w_values, life.limit_bytes, method=m, horizon_s=horizon_s, quality=quality)
             rows.append(OriginRow(method=m, alert=r.status == "crossing_predicted", status=r.status,
                                   eta_s=r.eta_s, eta_earliest_s=r.eta_earliest_s, eta_latest_s=r.eta_latest_s,
                                   predicted_5min_mib=r.predicted_mib_at(VALUE_AHEAD_S), **base))
@@ -304,15 +311,15 @@ def load_lives(namespace: str, since: Optional[datetime], until: Optional[dateti
     return lives
 
 
-def classify(lives: Sequence[Life]) -> dict[str, str]:
-    """positive = ends in OOMKilled; negative = deployment never OOMKilled; excluded = everything else,
-    including lives with fewer than MIN_SAMPLES samples (same rule for every method)."""
-    oom_deps = {l.deployment for l in lives if l.ends_in_oom}
+def classify(lives: Sequence[Life], min_samples: int = MIN_SAMPLES) -> dict[str, str]:
+    """positive = ends in a failure (OOMKilled, Evicted); negative = the deployment never failed;
+    excluded = everything else, including lives with fewer than min_samples samples (same rule for every method)."""
+    oom_deps = {l.deployment for l in lives if l.ends_in_failure}
 
     def case(l: Life) -> str:
-        if len(l.times) < MIN_SAMPLES:
+        if len(l.times) < min_samples:
             return "excluded"
-        if l.ends_in_oom:
+        if l.ends_in_failure:
             return "excluded" if l.starts_after_gap else "positive"
         if l.deployment not in oom_deps and l.end_reason in (None, "collector_gap"):
             return "negative"
@@ -320,11 +327,11 @@ def classify(lives: Sequence[Life]) -> dict[str, str]:
     return {l.life_id: case(l) for l in lives}
 
 
-def exclusion_reason(life: Life) -> str:
-    if len(life.times) < MIN_SAMPLES:
-        return f"too short (<{MIN_SAMPLES} samples)"
-    if life.ends_in_oom and life.starts_after_gap:
-        return "OOMKilled but starts after a collector gap (incomplete)"
+def exclusion_reason(life: Life, min_samples: int = MIN_SAMPLES) -> str:
+    if len(life.times) < min_samples:
+        return f"too short (<{min_samples} samples)"
+    if life.ends_in_failure and life.starts_after_gap:
+        return f"{life.end_reason} but starts after a collector gap (incomplete)"
     if life.end_reason == "collector_gap":
         return "ends at a collector gap"
     return life.end_reason or "still running"
