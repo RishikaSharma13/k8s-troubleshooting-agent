@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
-from typing import List
+from typing import List, Optional
 
 @dataclass
 class Metric:
@@ -32,3 +32,4 @@ class RiskIncident:
     
     status: str  # "PENDING", "APPROVED", "EXECUTING", "RESOLVED", "FAILED"
     created_at: datetime
+    approved_action: Optional[str] = None  # set at approval; execution must match it

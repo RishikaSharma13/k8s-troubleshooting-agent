@@ -111,11 +111,19 @@ async def recommend_action(incident_id: str = Query(...)) -> dict:
 @router.post("/actions/approve")
 async def approve_action(
     incident_id: str = Query(...),
+    action: str = Query(..., description="The exact action being approved, e.g. INCREASE_MEMORY_LIMIT"),
 ) -> dict:
     """
-    Approve a recommended action for an incident.
+    Approve one exact action for an incident. Execution later refuses any other action.
     """
-    logger.info(f"Approving incident {incident_id}")
+    logger.info(f"Approving incident {incident_id} for action {action}")
+
+    if not ActionPlanner.validate_action(action):
+        return {
+            "status": "error",
+            "error": f"Unknown action: {action}",
+            "incident_id": incident_id,
+        }
 
     # Get incident first
     incident = collector.risk_manager.get_incident(incident_id)
@@ -138,11 +146,8 @@ async def approve_action(
             "incident_id": incident_id,
         }
 
-    # Update incident status
-    success = collector.risk_manager.update_incident_status(
-        incident_id,
-        "APPROVED",
-    )
+    # Record the approval together with the exact approved action
+    success = collector.risk_manager.approve_incident(incident_id, action)
 
     if not success:
         return {
@@ -155,7 +160,8 @@ async def approve_action(
         "status": "success",
         "incident_id": incident_id,
         "new_status": "APPROVED",
-        "message": "Incident approved for remediation.",
+        "approved_action": action,
+        "message": f"Incident approved for {action} only.",
     }
 
 @router.post("/actions/reject")
@@ -245,6 +251,20 @@ async def execute_remediation(
                 f"Incident must be APPROVED before execution. "
                 f"Current status: {incident.status}"
             ),
+            "incident_id": incident_id,
+        }
+
+    # Safety gate: only the exact approved action may run
+    if not incident.approved_action:
+        return {
+            "status": "error",
+            "error": "Incident was approved without a recorded action; re-approve it with an explicit action.",
+            "incident_id": incident_id,
+        }
+    if action != incident.approved_action:
+        return {
+            "status": "error",
+            "error": f"Action {action} does not match the approved action {incident.approved_action}.",
             "incident_id": incident_id,
         }
 

@@ -26,7 +26,7 @@ export default function ApprovalPanel({ incident, onApprove, onReject }) {
 
       // 1. Approve the incident
       const approveRes = await fetch(
-        `/api/v1/actions/approve?incident_id=${incident.incident_id}`,
+        `/api/v1/actions/approve?incident_id=${incident.incident_id}&action=${encodeURIComponent(incident.recommended_action)}`,
         { method: 'POST' }
       );
 
@@ -127,7 +127,7 @@ export default function ApprovalPanel({ incident, onApprove, onReject }) {
         </div>
         <div className="detail-row">
           <label>Recommended Action:</label>
-          <span>{incident.action_type || 'INVESTIGATE_LOGS'}</span>
+          <span>{incident.recommended_action || 'none'}</span>
         </div>
       </div>
 

@@ -58,6 +58,7 @@ class Incident(Base):
     
     # Recommendation
     recommended_action = Column(String(100))
+    approved_action = Column(String(100), nullable=True)  # the exact action a human approved
     confidence = Column(Float)  # 0-100%
     reasoning = Column(String(500))  # Why this action was recommended
     
