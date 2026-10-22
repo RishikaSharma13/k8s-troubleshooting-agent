@@ -273,34 +273,71 @@ def jobs_section(n_jobs=8):
     return "\n".join(reversed(table)), png(fig)
 
 
-def signals_summary(path):
-    """Key numbers from an evaluate_signals report (optional)."""
-    if not path:
-        return ""
-    rows = {}
-    section = None
+def new_prediction_sections(storage_table, storage_chart, jobs_table, jobs_chart, sig_summary) -> str:
+    """HTML for sections 4-6 (kept out of the page template: Python 3.10 has no nested f-strings)."""
+    if storage_chart:
+        storage = ("<table><tr><th>workload</th><th>storage now</th><th>80% threshold alert</th>"
+                   "<th>forecast (linear)</th></tr>" + storage_table + "</table>"
+                   f'<img src="data:image/png;base64,{storage_chart}" alt="local storage of the disk workloads">'
+                   '<p class="note">The kubelet re-measures disk only every ~70-100 s, so this signal moves in steps '
+                   'and is coarser than memory.</p>')
+    else:
+        storage = "<p>No storage readings yet.</p>"
+    if jobs_chart:
+        jobs = ("<table><tr><th>job</th><th>items</th><th>deadline (IST)</th><th>status</th><th>forecast</th></tr>"
+                + jobs_table + "</table>"
+                f'<img src="data:image/png;base64,{jobs_chart}" alt="progress of recent jobs against their deadline">'
+                '<p class="note">A "running too long" alert (80% of the allowed time) cannot say anything before '
+                '228 s; the forecast decides from the first few items.</p>')
+    else:
+        jobs = "<p>No job readings yet.</p>"
+    out = ('<div class="card"><h2>4. Storage: when will a pod be evicted for using too much local disk?</h2>'
+           + storage + "</div>\n"
+           '<div class="card"><h2>5. Jobs: will this job finish before its deadline?</h2>' + jobs + "</div>\n")
+    if sig_summary:
+        out += ('<div class="card"><h2>6. Evaluation of the new predictions</h2>' + sig_summary +
+                '<p class="note">Backtest from app.predictor.evaluate_signals; same rules as the memory evaluation.</p></div>\n')
+    return out
+
+
+def _report_tables(path):
+    """{(section, method): {column header: value}} for every table in an evaluate_signals report."""
+    out, section, header = {}, None, None
     for line in open(path):
         if line.startswith("### "):
-            section = line[4:].strip()
+            section, header = line[4:].strip(), None
         elif line.startswith("## Jobs"):
-            section = "jobs"
-        elif line.startswith("| ") and not line.startswith("|---") and not line.startswith("| Method") and not line.startswith("| Deployment"):
+            section, header = "jobs", None
+        elif line.startswith("| Method"):
+            header = [c.strip() for c in line.strip().strip("|").split("|")]
+        elif header and line.startswith("| ") and not line.startswith("|---"):
             cells = [c.strip() for c in line.strip().strip("|").split("|")]
-            rows[(section, cells[0])] = cells
+            out[(section, cells[0])] = dict(zip(header, cells))
+    return out
+
+
+def signals_summary(path):
+    """Key numbers from an evaluate_signals report (optional). Columns are read by name."""
+    if not path:
+        return ""
+    t = _report_tables(path)
+    get = lambda sec, m, col: t.get((sec, m), {}).get(col, "-")
     out = []
-    if ("disk-leak", "linear") in rows:
-        g = lambda m, i: rows.get(("disk-leak", m), ["-"] * 12)[i]
-        f = lambda m: rows.get(("disk-flat", m), ["-"] * 12)[5]
+    if ("disk-leak", "linear") in t:
         out.append("<h3>Storage eviction</h3><table><tr><th>method</th><th>evictions</th><th>missed</th>"
-                   "<th>warning (median min)</th><th>false alarms on disk-flat</th></tr>" +
-                   "".join(f"<tr><td>{m}</td><td>{g(m, 1)}</td><td>{g(m, 2)}</td><td>{g(m, 3)}</td><td>{f(m)}</td></tr>"
+                   "<th>warning (median min)</th><th>false alarms on disk-flat</th><th>no forecast on disk-flat</th></tr>" +
+                   "".join(f"<tr><td>{m}</td><td>{get('disk-leak', m, 'Evicted lives')}</td>"
+                           f"<td>{get('disk-leak', m, 'Missed')}</td><td>{get('disk-leak', m, 'Warning median (min)')}</td>"
+                           f"<td>{get('disk-flat', m, 'False-alarm rate')}</td>"
+                           f"<td>{get('disk-flat', m, 'No forecast (too little data)')}</td></tr>"
                            for m in ("linear", "prophet", "threshold80", "threshold90")) + "</table>")
-    if ("jobs", "linear") in rows:
+    if ("jobs", "linear") in t:
         out.append("<h3>Job deadlines</h3><table><tr><th>method</th><th>late jobs</th><th>missed</th>"
                    "<th>warning (median s)</th><th>accuracy at 50% of time</th><th>at 75%</th></tr>" +
-                   "".join(f"<tr><td>{m}</td><td>{rows[('jobs', m)][1]}</td><td>{rows[('jobs', m)][2]}</td>"
-                           f"<td>{rows[('jobs', m)][3]}</td><td>{rows[('jobs', m)][6]}</td><td>{rows[('jobs', m)][7]}</td></tr>"
-                           for m in ("linear", "prophet", "threshold80") if ("jobs", m) in rows) + "</table>")
+                   "".join(f"<tr><td>{m}</td><td>{get('jobs', m, 'Late jobs')}</td><td>{get('jobs', m, 'Missed')}</td>"
+                           f"<td>{get('jobs', m, 'Warning before deadline (median s)')}</td>"
+                           f"<td>{get('jobs', m, 'Accuracy @50% time')}</td><td>{get('jobs', m, 'Accuracy @75% time')}</td></tr>"
+                           for m in ("linear", "prophet", "threshold80") if ("jobs", m) in t) + "</table>")
     return "".join(out)
 
 
@@ -320,6 +357,7 @@ def main():
     storage_table, storage_chart = storage_section()
     jobs_table, jobs_chart = jobs_section()
     sig_summary = signals_summary(args.signals_report)
+    extra_sections = new_prediction_sections(storage_table, storage_chart, jobs_table, jobs_chart, sig_summary)
     gen = datetime.now(timezone.utc).astimezone(IST)
     table = "\n".join(
         f"<tr><td>{d}</td><td>{m}</td><td>{n}</td><td class='{'warn' if a == 'FIRING' else 'ok'}'>{a}</td>"
@@ -354,18 +392,7 @@ def main():
 <li>Prophet performed no better than linear regression: the test leaks are linear by design.</li>
 <li>Controlled workloads in one kind cluster: this demonstrates the method, not general accuracy.</li></ul></div>
 
-<div class="card"><h2>4. Storage: when will a pod be evicted for using too much local disk?</h2>
-{f"""<table><tr><th>workload</th><th>storage now</th><th>80% threshold alert</th><th>forecast (linear)</th></tr>
-{storage_table}</table>
-<img src="data:image/png;base64,{storage_chart}" alt="local storage of the disk workloads">
-<p class="note">The kubelet re-measures disk only every ~70-100 s, so this signal moves in steps and is coarser than memory.</p>""" if storage_chart else "<p>No storage readings yet.</p>"}</div>
-
-<div class="card"><h2>5. Jobs: will this job finish before its deadline?</h2>
-{f"""<table><tr><th>job</th><th>items</th><th>deadline (IST)</th><th>status</th><th>forecast</th></tr>
-{jobs_table}</table>
-<img src="data:image/png;base64,{jobs_chart}" alt="progress of recent jobs against their deadline">
-<p class="note">A "running too long" alert (80% of the allowed time) cannot say anything before 228 s; the forecast decides from the first few items.</p>""" if jobs_chart else "<p>No job readings yet.</p>"}</div>
-{f'<div class="card"><h2>6. Evaluation of the new predictions</h2>{sig_summary}<p class="note">Backtest from app.predictor.evaluate_signals; same rules as the memory evaluation.</p></div>' if sig_summary else ""}
+{extra_sections}
 </body></html>"""
     open(args.out, "w").write(page)
     print(f"wrote {args.out} ({len(page) // 1024} KiB) at {gen:%H:%M:%S} IST")
