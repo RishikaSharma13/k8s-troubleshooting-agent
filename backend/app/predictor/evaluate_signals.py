@@ -37,7 +37,10 @@ from app.predictor.memory_forecast import MiB, QualitySettings, forecast_series
 STORAGE_SIGNAL, JOB_SIGNAL = "ephemeral_storage_bytes", "job_succeeded"
 STORAGE_QUALITY = QualitySettings(min_samples=5, min_span_s=240, max_gap_s=300)
 STORAGE_GAP_SPLIT_S = 300        # collector silence that splits a life (heartbeat is 180 s)
-STORAGE_LOOKBACK_S = 30 * 60
+# 10 min, not 30: on early data (Session 16, development data) a startup step (disk-flat writing
+# 85 MiB in one go) stayed in a 30-min window and was read as a trend for 30 min. 10 min still
+# holds ~7 readings at the kubelet's ~70-100 s disk cadence. Scored on later, unseen data.
+STORAGE_LOOKBACK_S = 10 * 60
 STORAGE_HORIZON_S = 30 * 60
 JOB_QUALITY = QualitySettings(min_samples=4, min_span_s=45, max_gap_s=200)
 JOB_CHECKPOINTS = (0.5, 0.75)    # fractions of the allowed time

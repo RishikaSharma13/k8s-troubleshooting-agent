@@ -36,6 +36,20 @@ def disk_flat_life(minutes=60):
     return Life("disk-flat", "disk-flat-b", "", "disk-flat-b#1", times, [85 * MiB] * len(times), LIMIT)
 
 
+class TestStartupStep(unittest.TestCase):
+    """disk-flat on the real cluster: two readings at 0 MiB, then 85 MiB from the first minute on."""
+
+    def test_step_misread_as_trend_only_briefly(self):
+        times = [ts(0), ts(14), ts(60)] + [ts(60 + 180 * i) for i in range(1, 21)]          # 1 hour
+        values = [0, 0] + [85 * MiB] * 21
+        flat = Life("disk-flat", "disk-flat-s", "", "disk-flat-s#1", times, values, LIMIT)
+        rows = [r for r in evaluate_life(flat, "negative", 60.0, STORAGE_HORIZON_S, STORAGE_LOOKBACK_S, ["linear"], (),
+                                         quality=STORAGE_QUALITY, value_gap_s=300) if r.method == "linear"]
+        alerting = [(r.origin - ts(0)).total_seconds() for r in rows if r.alert]
+        self.assertTrue(all(t <= STORAGE_LOOKBACK_S + 60 for t in alerting))   # only while the step is in the window
+        self.assertLess(len(alerting) / len(rows), 0.25)
+
+
 class TestStorage(unittest.TestCase):
     def setUp(self):
         self.leak, self.flat = disk_leak_life(), disk_flat_life()
