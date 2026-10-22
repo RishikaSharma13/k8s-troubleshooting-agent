@@ -1,0 +1,139 @@
+# Additional prediction scenarios in the predict-lab namespace (apply after predict-lab.yaml).
+#
+#   disk-leak     writes 1 MiB every 15 s into a 100Mi-limited emptyDir -> Evicted after ~27 min,
+#                 then the Deployment starts a fresh pod (ground truth: Evicted)
+#   disk-flat     writes 85 MiB once, then holds at ~85% of its 100Mi limit; never evicted
+#                 (false-alarm test, like flat-hot for memory)
+#   deadline-job  a CronJob every 6 min: 20 items, each job runs at its own speed (0.7x-1.3x,
+#                 derived from its name), deadline 285 s ~ the median duration measured in the
+#                 pilot, so roughly half the jobs miss it (ground truth: DeadlineExceeded / Complete)
+#
+# Disk usage is re-measured by the kubelet only every ~70-100 s (pilot), so the leak is slow
+# enough to give ~18 real measurements per life.
+# Remove these three:  kubectl -n predict-lab delete deploy/disk-leak deploy/disk-flat cronjob/deadline-job
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: disk-leak
+  namespace: predict-lab
+  labels: {app: disk-leak, scenario: storage-prediction}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: disk-leak}
+  template:
+    metadata:
+      labels: {app: disk-leak, scenario: storage-prediction}
+    spec:
+      securityContext: {runAsNonRoot: true, runAsUser: 65534}
+      containers:
+        - name: writer
+          image: python:3.12-alpine
+          imagePullPolicy: IfNotPresent
+          command:
+            - python
+            - -u
+            - -c
+            - |
+              import os, time
+              chunk = b"\x01" * (1024 * 1024)
+              total = 0
+              with open("/data/fill.bin", "ab") as f:
+                  while True:
+                      time.sleep(15)
+                      f.write(chunk); f.flush(); os.fsync(f.fileno())
+                      total += 1
+                      print(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), f"written_mib={total}", flush=True)
+          resources:
+            requests: {memory: 32Mi, cpu: 10m, ephemeral-storage: 10Mi}
+            limits: {memory: 64Mi, cpu: 100m, ephemeral-storage: 100Mi}
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true}
+          volumeMounts: [{name: data, mountPath: /data}]
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: disk-flat
+  namespace: predict-lab
+  labels: {app: disk-flat, scenario: storage-prediction}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: disk-flat}
+  template:
+    metadata:
+      labels: {app: disk-flat, scenario: storage-prediction}
+    spec:
+      securityContext: {runAsNonRoot: true, runAsUser: 65534}
+      containers:
+        - name: writer
+          image: python:3.12-alpine
+          imagePullPolicy: IfNotPresent
+          command:
+            - python
+            - -u
+            - -c
+            - |
+              import os, time
+              with open("/data/fill.bin", "wb") as f:
+                  for _ in range(85):
+                      f.write(b"\x01" * (1024 * 1024))
+                  f.flush(); os.fsync(f.fileno())
+              print(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "written_mib=85, holding", flush=True)
+              while True:
+                  time.sleep(3600)
+          resources:
+            requests: {memory: 32Mi, cpu: 10m, ephemeral-storage: 10Mi}
+            limits: {memory: 64Mi, cpu: 100m, ephemeral-storage: 100Mi}
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true}
+          volumeMounts: [{name: data, mountPath: /data}]
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: deadline-job
+  namespace: predict-lab
+  labels: {app: deadline-job, scenario: deadline-prediction}
+spec:
+  schedule: "*/6 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      completions: 20
+      parallelism: 1
+      backoffLimit: 0
+      activeDeadlineSeconds: 285
+      template:
+        metadata:
+          labels: {app: deadline-job, scenario: deadline-prediction}
+        spec:
+          restartPolicy: Never
+          securityContext: {runAsNonRoot: true, runAsUser: 65534}
+          containers:
+            - name: item
+              image: python:3.12-alpine
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: JOB_NAME
+                  valueFrom:
+                    fieldRef: {fieldPath: "metadata.labels['job-name']"}
+              command:
+                - python
+                - -c
+                - |
+                  import hashlib, os, random, time
+                  name = os.environ.get("JOB_NAME", "unknown")
+                  speed = 0.7 + 0.6 * (int(hashlib.sha256(name.encode()).hexdigest(), 16) % 1000) / 999
+                  time.sleep(7.5 * speed * random.uniform(0.85, 1.15))
+              resources:
+                requests: {memory: 16Mi, cpu: 10m}
+                limits: {memory: 32Mi, cpu: 100m}
+              securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true}

@@ -205,6 +205,74 @@ class ContainerTermination(Base):
         return f"<ContainerTermination {self.namespace}/{self.pod}/{self.container} {self.reason} @ {self.finished_at}>"
 
 # ============================================================
+# TABLE 6: Signal Samples (any gradual signal, for more predictions)
+# ============================================================
+class SignalSample(Base):
+    """One reading of a gradual signal that can be forecast toward a limit.
+
+    Examples: a pod's ephemeral-storage use (limit = its storage limit), or a
+    Job's completed items (limit = completions, with a deadline). observed_at
+    is when the collector first saw this value; values are stored when they
+    change, plus a periodic re-confirmation (see app/collector/signals.py).
+    """
+    __tablename__ = "signal_samples"
+
+    id = Column(BigInteger, primary_key=True)
+
+    namespace = Column(String(255), nullable=False)
+    workload_kind = Column(String(50), nullable=False)   # Deployment, CronJob, Job, Pod
+    workload = Column(String(255), nullable=False)       # e.g. disk-leak, deadline-job
+    object_name = Column(String(255), nullable=False)    # pod or job name
+    signal = Column(String(100), nullable=False)         # e.g. ephemeral_storage_bytes, job_succeeded
+
+    observed_at = Column(DateTime(timezone=True), nullable=False)
+    value = Column(Float, nullable=False)
+    limit_value = Column(Float, nullable=True)
+    deadline_at = Column(DateTime(timezone=True), nullable=True)  # Jobs: start + activeDeadlineSeconds
+
+    collected_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("namespace", "object_name", "signal", "observed_at", name="uq_signal_samples_reading"),
+        Index("ix_signal_samples_workload_time", "namespace", "signal", "workload", "observed_at"),
+    )
+
+    def __repr__(self):
+        return f"<SignalSample {self.namespace}/{self.object_name} {self.signal}={self.value} @ {self.observed_at}>"
+
+
+# ============================================================
+# TABLE 7: Outcome Events (ground truth for the new predictions)
+# ============================================================
+class OutcomeEvent(Base):
+    """How an object ended: Evicted (pod), DeadlineExceeded or Complete (Job).
+
+    Failures are the ground truth that forecasts are scored against; successes
+    (Complete) are the negative cases. One row per object and event type.
+    """
+    __tablename__ = "outcome_events"
+
+    id = Column(BigInteger, primary_key=True)
+
+    namespace = Column(String(255), nullable=False)
+    workload_kind = Column(String(50), nullable=False)
+    workload = Column(String(255), nullable=False)
+    object_name = Column(String(255), nullable=False)
+    event_type = Column(String(100), nullable=False)     # Evicted, DeadlineExceeded, Complete
+    occurred_at = Column(DateTime(timezone=True), nullable=False)
+    message = Column(String(1000), nullable=True)
+
+    observed_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("namespace", "object_name", "event_type", name="uq_outcome_events_event"),
+        Index("ix_outcome_events_workload_time", "namespace", "workload", "occurred_at"),
+    )
+
+    def __repr__(self):
+        return f"<OutcomeEvent {self.namespace}/{self.object_name} {self.event_type} @ {self.occurred_at}>"
+
+# ============================================================
 # Dependency Injection (for FastAPI)
 # ============================================================
 def get_db():

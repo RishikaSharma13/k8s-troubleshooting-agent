@@ -13,6 +13,7 @@ from loguru import logger
 from sqlalchemy.engine import make_url
 
 from app.collector.memory_collector import MemoryCollector
+from app.collector.signals import SignalCollector
 from app.models.database import engine
 
 
@@ -31,6 +32,7 @@ def main(argv=None) -> int:
     logger.info("Memory collector starting: namespaces={} interval={}s database={}",
                 namespaces, args.interval, make_url(str(engine.url)).database)
     collector = MemoryCollector()
+    signals = SignalCollector()
     cycle = 0
     try:
         while True:
@@ -38,6 +40,10 @@ def main(argv=None) -> int:
             cycle += 1
             for namespace in namespaces:
                 collector.collect_once(namespace)
+                try:  # the newer signal collection must never stop memory collection
+                    signals.collect_once(namespace)
+                except Exception as exc:
+                    logger.exception("Signal collection crashed for {}: {}", namespace, exc)
             if args.cycles and cycle >= args.cycles:
                 break
             time.sleep(max(0.0, args.interval - (time.monotonic() - started)))
