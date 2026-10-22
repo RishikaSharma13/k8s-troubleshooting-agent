@@ -6,7 +6,7 @@ import pytest
 
 from app.predictor.evaluate import Life, classify, evaluate_life, summarize
 from app.predictor.evaluate_signals import (
-    STORAGE_HORIZON_S, STORAGE_LOOKBACK_S, STORAGE_QUALITY, JobLife, evaluate_job, load_job_lives,
+    STORAGE_HORIZON_S, STORAGE_LOOKBACK_S, STORAGE_MIN_POINTS, STORAGE_QUALITY, JobLife, evaluate_job, load_job_lives,
     load_storage_lives, summarize_jobs,
 )
 from app.predictor.memory_forecast import MiB
@@ -44,10 +44,14 @@ class TestStartupStep(unittest.TestCase):
         values = [0, 0] + [85 * MiB] * 21
         flat = Life("disk-flat", "disk-flat-s", "", "disk-flat-s#1", times, values, LIMIT)
         rows = [r for r in evaluate_life(flat, "negative", 60.0, STORAGE_HORIZON_S, STORAGE_LOOKBACK_S, ["linear"], (),
-                                         quality=STORAGE_QUALITY, value_gap_s=300) if r.method == "linear"]
+                                         quality=STORAGE_QUALITY, value_gap_s=300, min_points=STORAGE_MIN_POINTS)
+                if r.method == "linear"]
         alerting = [(r.origin - ts(0)).total_seconds() for r in rows if r.alert]
-        self.assertTrue(all(t <= STORAGE_LOOKBACK_S + 60 for t in alerting))   # only while the step is in the window
+        self.assertTrue(all(t <= 15 * 60 for t in alerting))          # only while the step is in the window
         self.assertLess(len(alerting) / len(rows), 0.25)
+        # and after that a real answer ("no crossing"), not a refusal
+        late = [r for r in rows if (r.origin - ts(0)).total_seconds() > 15 * 60]
+        self.assertTrue(late and all(r.status == "no_crossing" for r in late))
 
 
 class TestStorage(unittest.TestCase):
@@ -57,7 +61,8 @@ class TestStorage(unittest.TestCase):
         rows = []
         for life in (self.leak, self.flat):
             rows += evaluate_life(life, self.cases[life.life_id], 60.0, STORAGE_HORIZON_S, STORAGE_LOOKBACK_S,
-                                  ["linear"], (80, 90), quality=STORAGE_QUALITY, value_gap_s=300)
+                                  ["linear"], (80, 90), quality=STORAGE_QUALITY, value_gap_s=300,
+                                  min_points=STORAGE_MIN_POINTS)
         self.s = summarize(rows, STORAGE_HORIZON_S)
 
     def test_cases(self):
@@ -75,6 +80,7 @@ class TestStorage(unittest.TestCase):
 
     def test_flat_disk_false_alarms(self):
         self.assertEqual(self.s[("disk-flat", "linear")]["false_alarm_rate"], 0.0)
+        self.assertLess(self.s[("disk-flat", "linear")]["no_forecast_share"], 0.3)   # answered, not refused
         self.assertEqual(self.s[("disk-flat", "threshold80")]["false_alarm_rate"], 1.0)   # 85% is always above 80%
 
 

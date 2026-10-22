@@ -183,13 +183,14 @@ def value_at(times: Sequence[datetime], values: Sequence[int], at: datetime, max
 
 def evaluate_life(life: Life, case: str, step_s: float, horizon_s: float, lookback_s: float,
                   methods: Sequence[str], thresholds: Sequence[int],
-                  quality: QualitySettings = MEMORY_QUALITY, value_gap_s: float = 45.0) -> list[OriginRow]:
+                  quality: QualitySettings = MEMORY_QUALITY, value_gap_s: float = 45.0,
+                  min_points: int = 0) -> list[OriginRow]:
     rows: list[OriginRow] = []
     limit_mib = (life.limit_bytes or 0) / MiB
     for i in origin_indices(life.times, step_s, life.end_time):
         t = life.times[i]
         lo = i
-        while lo > 0 and (t - life.times[lo - 1]).total_seconds() < lookback_s:
+        while lo > 0 and ((t - life.times[lo - 1]).total_seconds() < lookback_s or i - lo + 1 < min_points):
             lo -= 1
         w_times, w_values = life.times[lo:i + 1], life.values[lo:i + 1]
         now_mib = life.values[i] / MiB
@@ -261,6 +262,7 @@ def summarize(rows: Sequence[OriginRow], horizon_s: float) -> dict:
         val = [abs(r.predicted_5min_mib - r.actual_5min_mib) for r in rs
                if r.predicted_5min_mib is not None and r.actual_5min_mib is not None]
         res["mae_5min_mib"] = (sum(val) / len(val)) if val else None
+        res["no_forecast_share"] = (sum(r.status == "insufficient_data" for r in rs) / len(rs)) if rs else None
         res["mae_5min_n"] = len(val)
         out[(dep, m)] = res
     return out

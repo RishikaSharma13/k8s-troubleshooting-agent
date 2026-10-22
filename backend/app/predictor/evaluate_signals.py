@@ -37,10 +37,13 @@ from app.predictor.memory_forecast import MiB, QualitySettings, forecast_series
 STORAGE_SIGNAL, JOB_SIGNAL = "ephemeral_storage_bytes", "job_succeeded"
 STORAGE_QUALITY = QualitySettings(min_samples=5, min_span_s=240, max_gap_s=300)
 STORAGE_GAP_SPLIT_S = 300        # collector silence that splits a life (heartbeat is 180 s)
+# Window: the last 10 min, extended back to at least STORAGE_MIN_POINTS readings.
 # 10 min, not 30: on early data (Session 16, development data) a startup step (disk-flat writing
-# 85 MiB in one go) stayed in a 30-min window and was read as a trend for 30 min. 10 min still
-# holds ~7 readings at the kubelet's ~70-100 s disk cadence. Scored on later, unseen data.
+# 85 MiB in one go) stayed in a 30-min window and was read as a trend for 30 min. A steady disk
+# only gets a reading every 3 min (re-confirmation), so 10 min alone held 3-4 readings and the
+# forecaster refused to answer; extending to 5 readings gives a real answer. Scored on later data.
 STORAGE_LOOKBACK_S = 10 * 60
+STORAGE_MIN_POINTS = 5
 STORAGE_HORIZON_S = 30 * 60
 JOB_QUALITY = QualitySettings(min_samples=4, min_span_s=45, max_gap_s=200)
 JOB_CHECKPOINTS = (0.5, 0.75)    # fractions of the allowed time
@@ -189,7 +192,8 @@ def summarize_jobs(rows: Sequence[JobDecision]) -> dict:
         res = {"late_jobs": len(pos), "on_time_jobs": len(neg), "missed": missed,
                "warning_s_median": statistics.median(warn) if warn else None,
                "false_alarm_jobs": false_jobs,
-               "false_alarm_rate": (sum(r.alert for r in neg_rows) / len(neg_rows)) if neg_rows else None}
+               "false_alarm_rate": (sum(r.alert for r in neg_rows) / len(neg_rows)) if neg_rows else None,
+               "no_forecast_share": (sum(r.status == "insufficient_data" for r in rs) / len(rs)) if rs else None}
         for cp in JOB_CHECKPOINTS:
             tp = fn = fp = tn = 0
             errs = []
@@ -235,13 +239,14 @@ def write_report(path: Path, namespace: str, until: Optional[str], storage: Opti
         L += ["", "Excluded: " + (", ".join(f"{k}: {v}" for k, v in sorted(excl.items())) or "none") + ".", ""]
         for dep in sorted({d for d, _ in summary}):
             L += [f"### {dep}", "", "| Method | Evicted lives | Missed | Warning median (min) | Warning min (min) | "
-                  "False-alarm rate | False-alarm episodes | Bias @10m (min) | Coverage @10m | Bias @5m | Coverage @5m |",
-                  "|" + "---|" * 11]
+                  "False-alarm rate | False-alarm episodes | No forecast (too little data) | Bias @10m (min) | "
+                  "Coverage @10m | Bias @5m | Coverage @5m |", "|" + "---|" * 12]
             for (d, m), s in sorted(summary.items()):
                 if d != dep or m == "persistence":
                     continue
                 L.append("| " + " | ".join([m, str(s["oom_lives"]), str(s["missed"]), fmt(s["lead_min_median"]),
                          fmt(s["lead_min_min"]), fmt(s["false_alarm_rate"], pct=True), str(s["false_alarm_episodes"]),
+                         fmt(s["no_forecast_share"], pct=True) if not m.startswith("threshold") else "-",
                          fmt(s["cp600_bias_min"], "+.2f"), fmt(s["cp600_coverage"], pct=True),
                          fmt(s["cp300_bias_min"], "+.2f"), fmt(s["cp300_coverage"], pct=True)]) + " |")
             sh = {p: v for (d, p), v in shares.items() if d == dep}
@@ -256,11 +261,13 @@ def write_report(path: Path, namespace: str, until: Optional[str], storage: Opti
               f"Jobs: {counts['positive']} missed their deadline (DeadlineExceeded), {counts['negative']} finished "
               f"in time (Complete), {counts['excluded']} excluded (still running, no outcome recorded, or too few readings).", "",
               "| Method | Late jobs | Missed | Warning before deadline (median s) | False-alarm jobs | False-alarm rate | "
-              "Accuracy @50% time | Accuracy @75% time | Finish-time error @50% (median s) |", "|" + "---|" * 9]
+              "No forecast (too little data) | Accuracy @50% time | Accuracy @75% time | Finish-time error @50% (median s) |",
+              "|" + "---|" * 10]
         for m, s in summary.items():
             c50, c75 = s["cp50"], s["cp75"]
             L.append("| " + " | ".join([m, str(s["late_jobs"]), str(s["missed"]), fmt(s["warning_s_median"], ".0f"),
                      f"{s['false_alarm_jobs']}/{s['on_time_jobs']}", fmt(s["false_alarm_rate"], pct=True),
+                     fmt(s["no_forecast_share"], pct=True) if not m.startswith("threshold") else "-",
                      f"{fmt(c50['accuracy'], pct=True)} ({c50['tp']}TP {c50['fn']}FN {c50['fp']}FP {c50['tn']}TN)",
                      f"{fmt(c75['accuracy'], pct=True)} ({c75['tp']}TP {c75['fn']}FN {c75['fp']}FP {c75['tn']}TN)",
                      fmt(c50["finish_err_s_median"], ".0f")]) + " |")
@@ -269,6 +276,8 @@ def write_report(path: Path, namespace: str, until: Optional[str], storage: Opti
           "- Storage bias > 0 means the forecast was late. Evictions happen at the kubelet's next disk check after the "
           "limit is crossed, so forecasts are expected to be slightly early (negative bias).",
           "- Disk readings are re-measured only every ~70-100 s, so storage predictions are coarser than memory ones.",
+          "- 'No forecast' is the share of decisions where the forecaster refused (too few readings). A refusal counts "
+          "as 'no alert', so read false-alarm rates together with it.",
           "- Controlled workloads in one kind cluster: these results demonstrate the method, not general accuracy.", ""]
     path.write_text("\n".join(L))
 
@@ -294,7 +303,8 @@ def main(argv=None) -> int:
         for life in lives:
             if cases[life.life_id] != "excluded":
                 rows += evaluate_life(life, cases[life.life_id], 60.0, STORAGE_HORIZON_S, STORAGE_LOOKBACK_S,
-                                      methods, (80, 90), quality=STORAGE_QUALITY, value_gap_s=STORAGE_QUALITY.max_gap_s)
+                                      methods, (80, 90), quality=STORAGE_QUALITY, value_gap_s=STORAGE_QUALITY.max_gap_s,
+                                      min_points=STORAGE_MIN_POINTS)
         with open(out / "storage_decisions.csv", "w", newline="") as f:
             w = csv.DictWriter(f, fieldnames=list(asdict(rows[0]).keys()) if rows else ["empty"]); w.writeheader()
             for r in rows:
