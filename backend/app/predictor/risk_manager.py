@@ -132,6 +132,7 @@ class RiskManager:
             confidence=db_incident.confidence or 0.0,
             status=db_incident.status,
             created_at=created_at,
+            approved_action=db_incident.approved_action,
         )
 
     def create_incident(
@@ -255,6 +256,33 @@ class RiskManager:
 
             return self._to_risk_incident(incident)
 
+        finally:
+            db.close()
+
+    def approve_incident(self, incident_id: str, action: str) -> bool:
+        """Approve a PENDING incident for one exact action, in a single update.
+
+        Returns False if the incident does not exist or is not PENDING. Execution
+        later refuses any action other than the one recorded here.
+        """
+        db = SessionLocal()
+        try:
+            incident = (
+                db.query(Incident)
+                .filter(Incident.id == incident_id, Incident.status == "PENDING")
+                .first()
+            )
+            if incident is None:
+                return False
+            incident.status = "APPROVED"
+            incident.approved_action = action
+            incident.approved_at = datetime.utcnow()
+            db.commit()
+            logger.info(f"Incident {incident_id} status: APPROVED for action {action}")
+            return True
+        except Exception:
+            db.rollback()
+            raise
         finally:
             db.close()
 

@@ -111,20 +111,17 @@ async def recommend_action(incident_id: str = Query(...)) -> dict:
 @router.post("/actions/approve")
 async def approve_action(
     incident_id: str = Query(...),
-    action: str = Query(...),
+    action: str = Query(..., description="The exact action being approved, e.g. INCREASE_MEMORY_LIMIT"),
 ) -> dict:
     """
-    Approve a recommended action for an incident.
+    Approve one exact action for an incident. Execution later refuses any other action.
     """
-    logger.info(
-        f"Approving action {action} for incident {incident_id}"
-    )
+    logger.info(f"Approving incident {incident_id} for action {action}")
 
-    # Validate action
     if not ActionPlanner.validate_action(action):
         return {
             "status": "error",
-            "error": f"Invalid action: {action}",
+            "error": f"Unknown action: {action}",
             "incident_id": incident_id,
         }
 
@@ -149,11 +146,8 @@ async def approve_action(
             "incident_id": incident_id,
         }
 
-    # Update incident status
-    success = collector.risk_manager.update_incident_status(
-        incident_id,
-        "APPROVED",
-    )
+    # Record the approval together with the exact approved action
+    success = collector.risk_manager.approve_incident(incident_id, action)
 
     if not success:
         return {
@@ -165,11 +159,10 @@ async def approve_action(
     return {
         "status": "success",
         "incident_id": incident_id,
-        "action": action,
         "new_status": "APPROVED",
-        "message": "Action approved. Ready for execution.",
+        "approved_action": action,
+        "message": f"Incident approved for {action} only.",
     }
-
 
 @router.post("/actions/reject")
 async def reject_action(
@@ -258,6 +251,20 @@ async def execute_remediation(
                 f"Incident must be APPROVED before execution. "
                 f"Current status: {incident.status}"
             ),
+            "incident_id": incident_id,
+        }
+
+    # Safety gate: only the exact approved action may run
+    if not incident.approved_action:
+        return {
+            "status": "error",
+            "error": "Incident was approved without a recorded action; re-approve it with an explicit action.",
+            "incident_id": incident_id,
+        }
+    if action != incident.approved_action:
+        return {
+            "status": "error",
+            "error": f"Action {action} does not match the approved action {incident.approved_action}.",
             "incident_id": incident_id,
         }
 
@@ -553,6 +560,50 @@ async def auto_remediate_action(
     except Exception as e:
         logger.error(f"Auto-remediation decision failed: {e}")
         return {"status": "error", "message": str(e), "auto_executed": False}
+
+@router.get("/metrics/history")
+async def get_metrics_history(
+    pod_name: str = Query(...),
+    namespace: str = Query("default"),
+    hours: int = Query(1),
+) -> dict:
+    """
+    Get historical metrics for a pod (for charts/graphing).
+    """
+    try:
+        from datetime import timedelta, datetime
+        from app.models.database import MetricsHistory, SessionLocal
+        
+        db = SessionLocal()
+        
+        # Get metrics from last N hours
+        cutoff_time = datetime.utcnow() - timedelta(hours=hours)
+        
+        metrics = db.query(MetricsHistory).filter(
+            MetricsHistory.pod_name == pod_name,
+            MetricsHistory.namespace == namespace,
+            MetricsHistory.recorded_at >= cutoff_time
+        ).order_by(MetricsHistory.recorded_at).all()
+        
+        db.close()
+        
+        return {
+            "status": "success",
+            "pod_name": pod_name,
+            "namespace": namespace,
+            "metrics": [
+                {
+                    "memory_percent": m.memory_percent,
+                    "cpu_percent": m.cpu_percent,
+                    "restart_count": m.restart_count,
+                    "recorded_at": m.recorded_at.isoformat() if m.recorded_at else None
+                }
+                for m in metrics
+            ]
+        }
+    except Exception as e:
+        logger.error(f"Error fetching metrics history: {e}")
+        return {"status": "error", "message": str(e)}
 
 @router.get("/health")
 async def health_check() -> dict:

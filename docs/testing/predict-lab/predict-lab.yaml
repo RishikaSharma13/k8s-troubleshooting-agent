@@ -1,0 +1,239 @@
+# Prediction scenarios: memory workloads with known ground truth.
+#
+#   leak-steady  ramp +2 MiB / 10 s until OOMKilled (about 20 min per cycle)
+#   leak-slow    ramp +1 MiB / 10 s until OOMKilled (about 40 min per cycle)
+#   flat-hot     steady ~80-83% of its limit, never OOMs (false-alarm test)
+#
+# All three use a 256Mi limit. Kubernetes restarts an OOMKilled container
+# automatically, so each leak produces a new OOM event every cycle.
+# Apply:   kubectl apply -f docs/testing/predict-lab/predict-lab.yaml
+# Remove:  kubectl delete namespace predict-lab
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: predict-lab
+  labels:
+    purpose: memory-prediction-scenarios
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: memload-script
+  namespace: predict-lab
+data:
+  memload.py: |
+    """Memory load generator for the prediction scenarios (predict-lab namespace).
+
+    MODE=ramp: allocate STEP_MIB every INTERVAL_S seconds until the container is
+               OOMKilled (a leak-like workload; ground truth = the OOMKill time).
+    MODE=flat: hold BASE_MIB, toggling an extra JITTER_MIB every JITTER_PERIOD_S
+               seconds (a steady, hot workload that never OOMs; false-alarm test).
+
+    Memory is written, not just reserved, so it counts toward the container's
+    working set. Every change is logged with a UTC timestamp.
+    """
+    import os
+    import time
+
+    MiB = 1024 * 1024
+
+
+    def allocate(mib: int) -> bytearray:
+        return bytearray(b"\x01") * (mib * MiB)  # writes every byte, so pages are resident
+
+
+    def log(message: str) -> None:
+        print(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), message, flush=True)
+
+
+    def ramp() -> None:
+        step = int(os.environ.get("STEP_MIB", "2"))
+        interval = float(os.environ.get("INTERVAL_S", "10"))
+        held, total = [], 0
+        log(f"mode=ramp step_mib={step} interval_s={interval}")
+        while True:
+            time.sleep(interval)
+            held.append(allocate(step))
+            total += step
+            log(f"allocated_mib={total}")
+
+
+    def flat() -> None:
+        base = int(os.environ.get("BASE_MIB", "195"))
+        jitter = int(os.environ.get("JITTER_MIB", "8"))
+        period = float(os.environ.get("JITTER_PERIOD_S", "30"))
+        held = allocate(base)
+        extra = None
+        log(f"mode=flat base_mib={base} jitter_mib={jitter} period_s={period}")
+        while True:
+            time.sleep(period)
+            extra = None if extra is not None else allocate(jitter)
+            log(f"allocated_mib={base + (jitter if extra is not None else 0)}")
+
+
+    if __name__ == "__main__":
+        {"ramp": ramp, "flat": flat}[os.environ.get("MODE", "ramp")]()
+---
+# Leak-like ramp: +2 MiB every 10 s -> OOMKilled after ~20 min, then restarts.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: leak-steady
+  namespace: predict-lab
+  labels:
+    app: leak-steady
+    scenario: memory-prediction
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: leak-steady
+  template:
+    metadata:
+      labels:
+        app: leak-steady
+        scenario: memory-prediction
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+      containers:
+        - name: memload
+          image: python:3.12-alpine
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-u", "/scripts/memload.py"]
+          env:
+            - name: MODE
+              value: "ramp"
+            - name: STEP_MIB
+              value: "2"
+            - name: INTERVAL_S
+              value: "10"
+          resources:
+            requests:
+              memory: 64Mi
+              cpu: 10m
+            limits:
+              memory: 256Mi
+              cpu: 200m
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+      volumes:
+        - name: scripts
+          configMap:
+            name: memload-script
+---
+# Slower leak: +1 MiB every 10 s -> OOMKilled after ~40 min.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: leak-slow
+  namespace: predict-lab
+  labels:
+    app: leak-slow
+    scenario: memory-prediction
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: leak-slow
+  template:
+    metadata:
+      labels:
+        app: leak-slow
+        scenario: memory-prediction
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+      containers:
+        - name: memload
+          image: python:3.12-alpine
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-u", "/scripts/memload.py"]
+          env:
+            - name: MODE
+              value: "ramp"
+            - name: STEP_MIB
+              value: "1"
+            - name: INTERVAL_S
+              value: "10"
+          resources:
+            requests:
+              memory: 64Mi
+              cpu: 10m
+            limits:
+              memory: 256Mi
+              cpu: 200m
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+      volumes:
+        - name: scripts
+          configMap:
+            name: memload-script
+---
+# Steady but hot: ~195 MiB + 8 MiB toggled every 30 s; never OOMs.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flat-hot
+  namespace: predict-lab
+  labels:
+    app: flat-hot
+    scenario: memory-prediction
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: flat-hot
+  template:
+    metadata:
+      labels:
+        app: flat-hot
+        scenario: memory-prediction
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+      containers:
+        - name: memload
+          image: python:3.12-alpine
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-u", "/scripts/memload.py"]
+          env:
+            - name: MODE
+              value: "flat"
+            - name: BASE_MIB
+              value: "195"
+            - name: JITTER_MIB
+              value: "8"
+            - name: JITTER_PERIOD_S
+              value: "30"
+          resources:
+            requests:
+              memory: 64Mi
+              cpu: 10m
+            limits:
+              memory: 256Mi
+              cpu: 200m
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+      volumes:
+        - name: scripts
+          configMap:
+            name: memload-script

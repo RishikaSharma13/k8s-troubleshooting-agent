@@ -27,9 +27,38 @@ class FakeCollector:
         return self.risk_manager.get_pending_incidents()
 
 
+class FakeExecutor:
+    """Stand-in for RemediationExecutor: records what would have run; never touches a cluster."""
+
+    def __init__(self):
+        self.calls = []
+
+    def execute_action(self, incident, action_type):
+        self.calls.append(action_type)
+        return {"status": "COMPLETED", "execution_id": "exec-test-1"}
+
+
+def _clear_test_database():
+    """These tests run only against a *_test database (see conftest.py), so a full cleanup is safe.
+    Earlier tests left incidents behind, which made the pending-incidents count unreliable."""
+    from app.models.database import Execution, Incident, MetricsHistory, SessionLocal
+    db = SessionLocal()
+    try:
+        db.query(Execution).delete()
+        db.query(Incident).delete()
+        db.query(MetricsHistory).filter(MetricsHistory.pod_name == "api-test-pod").delete()
+        db.commit()
+    finally:
+        db.close()
+
+
 class TestPredictorAPI(unittest.TestCase):
     def setUp(self):
+        _clear_test_database()
         self.original_collector = predictor_routes.collector
+        self.original_executor = predictor_routes.remediation_executor
+        self.executor = FakeExecutor()
+        predictor_routes.remediation_executor = self.executor
         self.collector = FakeCollector()
         predictor_routes.collector = self.collector
         self.client = TestClient(app)
@@ -52,6 +81,12 @@ class TestPredictorAPI(unittest.TestCase):
 
     def tearDown(self):
         predictor_routes.collector = self.original_collector
+        predictor_routes.remediation_executor = self.original_executor
+        _clear_test_database()
+
+    def _status(self):
+        """Read the incident back from the database (self.incident is only a copy made at creation)."""
+        return self.collector.risk_manager.get_incident(self.incident.id)
 
     def test_predictor_health(self):
         response = self.client.get("/api/v1/health")
@@ -119,7 +154,9 @@ class TestPredictorAPI(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "success")
         self.assertEqual(response.json()["new_status"], "APPROVED")
-        self.assertEqual(self.incident.status, "APPROVED")
+        self.assertEqual(response.json()["approved_action"], "SCALE_DEPLOYMENT")
+        stored = self._status()
+        self.assertEqual((stored.status, stored.approved_action), ("APPROVED", "SCALE_DEPLOYMENT"))
 
     def test_approve_rejects_unknown_action(self):
         response = self.client.post(
@@ -132,7 +169,7 @@ class TestPredictorAPI(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "error")
-        self.assertEqual(self.incident.status, "PENDING")
+        self.assertEqual(self._status().status, "PENDING")
 
     def test_reject_action(self):
         response = self.client.post(
@@ -148,7 +185,47 @@ class TestPredictorAPI(unittest.TestCase):
         self.assertEqual(body["status"], "success")
         self.assertEqual(body["new_status"], "REJECTED")
         self.assertEqual(body["reason"], "Manual review required")
-        self.assertEqual(self.incident.status, "REJECTED")
+        self.assertEqual(self._status().status, "REJECTED")
+
+    def test_approve_requires_an_action(self):
+        response = self.client.post("/api/v1/actions/approve", params={"incident_id": self.incident.id})
+        self.assertEqual(response.status_code, 422)          # the action is a required parameter
+        self.assertEqual(self._status().status, "PENDING")
+
+    def _approve(self, action):
+        r = self.client.post("/api/v1/actions/approve", params={"incident_id": self.incident.id, "action": action})
+        self.assertEqual(r.json()["status"], "success")
+
+    def test_execute_runs_only_the_approved_action(self):
+        self._approve("SCALE_DEPLOYMENT")
+        response = self.client.post("/api/v1/remediation/execute",
+                                    params={"incident_id": self.incident.id, "action": "SCALE_DEPLOYMENT"})
+        self.assertEqual(response.json()["status"], "success")
+        self.assertEqual(self.executor.calls, ["SCALE_DEPLOYMENT"])
+
+    def test_execute_refuses_a_different_action(self):
+        self._approve("SCALE_DEPLOYMENT")
+        response = self.client.post("/api/v1/remediation/execute",
+                                    params={"incident_id": self.incident.id, "action": "RESTART_DEPLOYMENT"})
+        self.assertEqual(response.json()["status"], "error")
+        self.assertIn("does not match the approved action SCALE_DEPLOYMENT", response.json()["error"])
+        self.assertEqual(self.executor.calls, [])              # nothing ran
+        self.assertEqual(self._status().status, "APPROVED")   # still awaiting the approved action
+
+    def test_execute_refuses_approval_without_recorded_action(self):
+        # An incident approved the old way (status only, e.g. before this change)
+        self.collector.risk_manager.update_incident_status(self.incident.id, "APPROVED")
+        response = self.client.post("/api/v1/remediation/execute",
+                                    params={"incident_id": self.incident.id, "action": "SCALE_DEPLOYMENT"})
+        self.assertEqual(response.json()["status"], "error")
+        self.assertIn("re-approve", response.json()["error"])
+        self.assertEqual(self.executor.calls, [])
+
+    def test_execute_refuses_unapproved_incident(self):
+        response = self.client.post("/api/v1/remediation/execute",
+                                    params={"incident_id": self.incident.id, "action": "SCALE_DEPLOYMENT"})
+        self.assertEqual(response.json()["status"], "error")
+        self.assertEqual(self.executor.calls, [])
 
     def test_reject_missing_incident(self):
         response = self.client.post(

@@ -1,3 +1,4 @@
+from app.api import metrics_routes
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.api import predictor_routes

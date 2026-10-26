@@ -1,0 +1,248 @@
+.auto-remediation-status {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  border-radius: 12px;
+  padding: 20px;
+  color: white;
+  margin-bottom: 20px;
+  box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+.auto-remediation-status.error {
+  background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+}
+
+/* Status Header */
+.status-header {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  margin-bottom: 20px;
+  padding-bottom: 15px;
+  border-bottom: 2px solid rgba(255, 255, 255, 0.2);
+}
+
+.action-icon {
+  font-size: 28px;
+  min-width: 40px;
+  text-align: center;
+}
+
+.header-text {
+  flex: 1;
+}
+
+.header-text h3 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.timestamp {
+  margin: 4px 0 0 0;
+  font-size: 12px;
+  opacity: 0.85;
+}
+
+.success-badge,
+.failed-badge {
+  padding: 6px 12px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.success-badge {
+  background: rgba(76, 175, 80, 0.3);
+  border: 1px solid rgba(76, 175, 80, 0.6);
+  color: #c8e6c9;
+}
+
+.failed-badge {
+  background: rgba(244, 67, 54, 0.3);
+  border: 1px solid rgba(244, 67, 54, 0.6);
+  color: #ffcdd2;
+}
+
+/* Loading State */
+.loading,
+.no-data {
+  text-align: center;
+  padding: 20px;
+  font-size: 14px;
+  opacity: 0.8;
+}
+
+/* Metrics Comparison */
+.metrics-comparison {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  padding: 15px;
+  margin-bottom: 15px;
+  backdrop-filter: blur(10px);
+}
+
+.metrics-comparison h4 {
+  margin: 0 0 15px 0;
+  font-size: 14px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* Metric Row */
+.metric-row {
+  margin-bottom: 18px;
+}
+
+.metric-row:last-child {
+  margin-bottom: 0;
+}
+
+.metric-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.improvement {
+  background: rgba(76, 175, 80, 0.3);
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 12px;
+  color: #c8e6c9;
+  font-weight: 600;
+}
+
+/* Metric Bars */
+.metric-bars {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.before-bar,
+.after-bar {
+  flex: 1;
+  height: 28px;
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 6px;
+  overflow: hidden;
+  position: relative;
+}
+
+.bar-fill {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 600;
+  transition: width 0.6s ease;
+}
+
+.memory-before {
+  background: linear-gradient(90deg, #ff6b6b, #ff8c42);
+}
+
+.memory-after {
+  background: linear-gradient(90deg, #4ecdc4, #44a6d4);
+}
+
+.cpu-before {
+  background: linear-gradient(90deg, #ffa500, #ff6b6b);
+}
+
+.cpu-after {
+  background: linear-gradient(90deg, #95de64, #52c41a);
+}
+
+.arrow {
+  font-size: 16px;
+  opacity: 0.7;
+  min-width: 20px;
+  text-align: center;
+}
+
+/* Restart Count Comparison */
+.restart-comparison {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.restart-before,
+.restart-after {
+  background: rgba(255, 255, 255, 0.1);
+  padding: 8px 12px;
+  border-radius: 6px;
+  flex: 1;
+  text-align: center;
+}
+
+.restart-after {
+  background: rgba(76, 175, 80, 0.2);
+}
+
+/* Remediation Details */
+.remediation-details {
+  background: rgba(255, 255, 255, 0.08);
+  border-left: 3px solid rgba(255, 255, 255, 0.3);
+  border-radius: 4px;
+  padding: 12px;
+  margin-top: 10px;
+}
+
+.result-text {
+  margin: 0;
+  font-size: 12px;
+  font-family: 'Courier New', monospace;
+  line-height: 1.4;
+  opacity: 0.9;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .auto-remediation-status {
+    padding: 15px;
+  }
+
+  .status-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+  }
+
+  .metrics-comparison {
+    padding: 12px;
+  }
+
+  .metric-bars {
+    flex-direction: column;
+  }
+
+  .before-bar,
+  .after-bar {
+    width: 100%;
+  }
+
+  .arrow {
+    transform: rotate(90deg);
+  }
+
+  .restart-comparison {
+    flex-direction: column;
+  }
+
+  .restart-before,
+  .restart-after {
+    width: 100%;
+  }
+}
