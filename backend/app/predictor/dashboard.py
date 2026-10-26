@@ -115,6 +115,28 @@ def parse_report(path):
     return rows
 
 
+def memory_report_facts(path, rows):
+    """Numbers quoted in section 3, read from the memory report itself (never hard-coded)."""
+    leaks = ("leak-steady", "leak-slow")
+    n_oom = sum(int(rows.get((d, "linear"), {}).get("OOM lives", "0") or 0) for d in leaks)
+    cov = []
+    for d in leaks:
+        for m in ("linear", "prophet"):
+            for col in ("Coverage @10m", "Coverage @5m"):
+                v = rows.get((d, m), {}).get(col, "-")
+                if v.endswith("%"):
+                    cov.append(int(v[:-1]))
+    window = ""
+    for line in open(path):
+        if line.startswith("Generated") and "Parameters:" in line:
+            params = dict(kv.split("=", 1) for kv in line.split("Parameters:", 1)[1].strip().split(", ") if "=" in kv)
+            since, until = params.get("since", "None"), params.get("until", "None")
+            window = (f"data from {since} to {until} UTC" if since != "None" else f"data up to {until} UTC")
+            break
+    coverage = f"{min(cov)}-{max(cov)}%" if cov else "well under 80%"
+    return {"n_oom": n_oom, "coverage": coverage, "window": window}
+
+
 def chart_evaluation(rows):
     num = lambda s: float(s.rstrip("%")) if s not in ("-", "") else 0.0
     methods = ["linear", "prophet", "threshold80", "threshold90"]
@@ -353,6 +375,7 @@ def main():
     recent = chart_recent(lives)
     example, note = chart_prediction_example(lives)
     evaluation = chart_evaluation(rows)
+    facts = memory_report_facts(args.report, rows)
     live = live_forecasts()
     storage_table, storage_chart = storage_section()
     jobs_table, jobs_chart = jobs_section()
@@ -384,11 +407,11 @@ def main():
 <div class="card"><h2>2. Does the forecast come true?</h2>
 {f'<img src="data:image/png;base64,{example}" alt="forecast vs actual for one OOMKill"><p class="note">{note}</p>' if example else '<p>No complete leak-steady life in the last 26 hours.</p>'}</div>
 
-<div class="card"><h2>3. Evaluation: forecasts vs threshold alerts (32 real OOMKills)</h2>
+<div class="card"><h2>3. Evaluation: forecasts vs threshold alerts ({facts["n_oom"]} real OOMKills)</h2>
 <img src="data:image/png;base64,{evaluation}" alt="warning time and false alarms by method">
-<p>Backtest over about 7 hours of collected data: each decision used only data available at that moment.</p>
+<p>Backtest on {facts["window"]}: each decision used only data available at that moment.</p>
 <h3>Honest limitations</h3><ul class="limits">
-<li>Prediction intervals are overconfident: actual times fell inside the 80% interval only 50-82% of the time.</li>
+<li>Prediction intervals are overconfident: actual times fell inside the 80% interval only {facts["coverage"]} of the time.</li>
 <li>Prophet performed no better than linear regression: the test leaks are linear by design.</li>
 <li>Controlled workloads in one kind cluster: this demonstrates the method, not general accuracy.</li></ul></div>
 

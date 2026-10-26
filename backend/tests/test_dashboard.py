@@ -27,6 +27,22 @@ def current_format_report(path):
                                                                            evaluate_job(ok, ["linear"]))))
 
 
+class TestMemoryFacts(unittest.TestCase):
+    def test_numbers_come_from_the_report(self):
+        import pathlib, tempfile
+        path = pathlib.Path(tempfile.mkdtemp()) / "mem.md"
+        path.write_text(
+            "Generated 2026-10-26 05:37 UTC. Parameters: origin_step_s=60.0, since=2026-10-21T05:51, until=2026-10-26T04:27\n\n"
+            "## leak-slow\n\n| Method | OOM lives | Coverage @10m | Coverage @5m |\n|---|---|---|---|\n"
+            "| linear | 145 | 64% | 56% |\n| prophet | 145 | 51% | 45% |\n\n"
+            "## leak-steady\n\n| Method | OOM lives | Coverage @10m | Coverage @5m |\n|---|---|---|---|\n"
+            "| linear | 292 | 76% | 93% |\n| prophet | 292 | 66% | 80% |\n")
+        facts = dashboard.memory_report_facts(str(path), dashboard.parse_report(str(path)))
+        self.assertEqual(facts["n_oom"], 437)
+        self.assertEqual(facts["coverage"], "45-93%")
+        self.assertEqual(facts["window"], "data from 2026-10-21T05:51 to 2026-10-26T04:27 UTC")
+
+
 class TestSummary(unittest.TestCase):
     def test_columns_are_read_by_name(self, tmp_path=None):
         import tempfile, pathlib
