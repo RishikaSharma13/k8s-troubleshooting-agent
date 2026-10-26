@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from app.predictor.evaluate import (
-    Life, OriginRow, classify, exclusion_reason, threshold_share_all_samples, evaluate_life, load_lives, origin_indices, split_lives, summarize, value_at,
+    Life, OriginRow, apply_window, classify, exclusion_reason, threshold_share_all_samples, evaluate_life, load_lives, origin_indices, split_lives, summarize, value_at,
 )
 from app.predictor.memory_forecast import MiB
 
@@ -66,6 +66,28 @@ class TestCollectorGaps(unittest.TestCase):
     def test_small_gaps_do_not_split(self):
         times = [ts(15 * i) for i in range(5)] + [ts(60 + 80 + 15 * i) for i in range(5)]   # one 80 s gap
         self.assertEqual(len(split_lives("leak", "p", "c", times, [MiB] * 10, LIMIT, [])), 1)
+
+
+class TestEvaluationWindow(unittest.TestCase):
+    """--since: failing lives must start inside the window; never-failing ones are trimmed."""
+
+    def test_window_rule(self):
+        ten = [ts(15 * i) for i in range(10)]
+        before_fail = Life("leak", "p1", "c", "a", times=ten, values=[MiB] * 10, end_reason="OOMKilled")
+        inside_fail = Life("leak", "p1", "c", "b", times=[ts(600 + 15 * i) for i in range(10)], values=[MiB] * 10,
+                           end_reason="OOMKilled")
+        flat = Life("flat", "p2", "c", "c", times=ten, values=[MiB] * 10)
+        before_fail.end_time = ts(150)                                    # straddles the start (60 s)
+        done_before = Life("leak", "p1", "c", "d", times=ten[:3], values=[MiB] * 3, end_time=ts(40), end_reason="OOMKilled")
+        kept, excluded = apply_window([before_fail, inside_fail, flat, done_before], since=ts(60))
+        self.assertEqual(excluded, 1)          # only the straddling one counts; the one entirely before is just outside
+        self.assertEqual([l.life_id for l in kept], ["b", "c"])
+        self.assertEqual(flat.times[0], ts(60))                           # never-failing life trimmed
+        self.assertEqual(len(flat.times), 6)
+
+    def test_no_window_changes_nothing(self):
+        life = Life("leak", "p", "c", "a", times=[ts(0)], values=[MiB], end_reason="OOMKilled")
+        self.assertEqual(apply_window([life], None), ([life], 0))
 
 
 class TestHelpers(unittest.TestCase):

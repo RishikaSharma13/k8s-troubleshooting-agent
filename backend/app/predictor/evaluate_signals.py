@@ -30,7 +30,8 @@ from pathlib import Path
 from typing import Callable, Optional, Sequence
 
 from app.predictor.evaluate import (
-    Life, classify, evaluate_life, exclusion_reason, fmt, split_at_gaps, summarize, threshold_share_all_samples,
+    Life, apply_window, classify, evaluate_life, exclusion_reason, fmt, split_at_gaps, summarize,
+    threshold_share_all_samples,
 )
 from app.predictor.memory_forecast import MiB, QualitySettings, forecast_series
 
@@ -220,10 +221,15 @@ def summarize_jobs(rows: Sequence[JobDecision]) -> dict:
 # ------------------------------------------------------------------
 # Report
 # ------------------------------------------------------------------
-def write_report(path: Path, namespace: str, until: Optional[str], storage: Optional[tuple], jobs: Optional[tuple]) -> None:
+def write_report(path: Path, namespace: str, until: Optional[str], storage: Optional[tuple], jobs: Optional[tuple],
+                 since: Optional[str] = None, before_window: Optional[dict] = None) -> None:
+    window = f"data from {since} until {until or 'now'} (UTC)" if since else f"data until {until or 'now'}"
     L = [f"# Storage and Job-deadline evaluation: namespace `{namespace}`", "",
-         f"Generated {datetime.now(timezone.utc):%Y-%m-%d %H:%M UTC}; data until {until or 'now'}. "
+         f"Generated {datetime.now(timezone.utc):%Y-%m-%d %H:%M UTC}; {window}. "
          "Each decision used only readings available at that moment.", ""]
+    if since and before_window:
+        L += ["Excluded because they started before the evaluation window: " +
+              ", ".join(f"{k}: {v}" for k, v in before_window.items()) + ".", ""]
     if storage:
         lives, cases, summary, shares = storage
         L += ["## Storage: predicting eviction (ephemeral-storage limit)", "",
@@ -287,17 +293,20 @@ def main(argv=None) -> int:
     ap.add_argument("--namespace", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--until", help="ISO time (UTC)")
+    ap.add_argument("--since", help="ISO time (UTC): evaluate only lives/Jobs that started at or after this time")
     ap.add_argument("--what", choices=["storage", "jobs", "all"], default="all")
     ap.add_argument("--methods", default="prophet,linear")
     args = ap.parse_args(argv)
     until = datetime.fromisoformat(args.until).replace(tzinfo=timezone.utc) if args.until else None
+    since = datetime.fromisoformat(args.since).replace(tzinfo=timezone.utc) if args.since else None
+    before_window = {}
     methods = [m for m in args.methods.split(",") if m]
     out = Path(args.out); out.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
 
     storage = jobs = None
     if args.what in ("storage", "all"):
-        lives = load_storage_lives(args.namespace, until)
+        lives, before_window["storage lives"] = apply_window(load_storage_lives(args.namespace, until), since)
         cases = classify(lives, STORAGE_QUALITY.min_samples)
         rows = []
         for life in lives:
@@ -313,6 +322,10 @@ def main(argv=None) -> int:
         print(f"storage: {len(lives)} lives, {len(rows)} decisions, {time.monotonic() - started:.0f}s", flush=True)
     if args.what in ("jobs", "all"):
         lives = load_job_lives(args.namespace, until)
+        if since:
+            started_before = [l for l in lives if l.times and l.times[0] < since]
+            before_window["jobs"] = len(started_before)
+            lives = [l for l in lives if l.times and l.times[0] >= since]
         rows = []
         for life in lives:
             if life.case != "excluded":
@@ -323,7 +336,7 @@ def main(argv=None) -> int:
                 w.writerow(asdict(r))
         jobs = (lives, summarize_jobs(rows))
         print(f"jobs: {len(lives)} jobs, {len(rows)} decisions, {time.monotonic() - started:.0f}s", flush=True)
-    write_report(out / "report.md", args.namespace, args.until, storage, jobs)
+    write_report(out / "report.md", args.namespace, args.until, storage, jobs, args.since, before_window)
     print(f"done in {time.monotonic() - started:.0f}s: {out / 'report.md'}")
     return 0
 

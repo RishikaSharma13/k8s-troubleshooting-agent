@@ -155,6 +155,33 @@ def _life(deployment, pod, container, index, samples, limit_bytes, end_time, end
                 limit_bytes=limit_bytes, end_time=end_time, end_reason=end_reason)
 
 
+def apply_window(lives: Sequence[Life], since: Optional[datetime]) -> tuple[list[Life], int]:
+    """Restrict lives to an evaluation window starting at `since`.
+
+    A life that ends in a failure must have started inside the window: otherwise its history would
+    be cut mid-way and its warning time unfairly short, so it is excluded (and counted). A life that
+    does not end in a failure (a never-failing workload) is trimmed to readings at or after `since`.
+    Returns (lives kept, number excluded because they started before the window).
+    """
+    if since is None:
+        return list(lives), 0
+    kept, excluded = [], 0
+    for life in lives:
+        if not life.times or life.times[0] >= since:
+            kept.append(life)
+        elif life.end_time is not None and life.end_time < since:
+            continue                      # entirely before the window: simply outside it, not an exclusion
+        elif life.ends_in_failure:
+            excluded += 1                 # straddles the start of the window
+        else:
+            idx = [i for i, t in enumerate(life.times) if t >= since]
+            if idx:
+                life.times = [life.times[i] for i in idx]
+                life.values = [life.values[i] for i in idx]
+                kept.append(life)
+    return kept, excluded
+
+
 def origin_indices(times: Sequence[datetime], step_s: float, end_time: Optional[datetime]) -> list[int]:
     """Sample indices used as decision points: at least step_s apart, strictly before the life's end."""
     out, last = [], None
@@ -427,7 +454,8 @@ def main(argv=None) -> int:
     out = Path(args.out); out.mkdir(parents=True, exist_ok=True)
 
     started = time.monotonic()
-    lives = load_lives(args.namespace, parse(args.since), parse(args.until))
+    # Load everything up to --until, then apply the --since window (so no failing life is cut mid-way)
+    lives, before_window = apply_window(load_lives(args.namespace, None, parse(args.until)), parse(args.since))
     cases = classify(lives)
     scored = [l for l in lives if cases[l.life_id] != "excluded"]
     print(f"{len(lives)} lives loaded, {len(scored)} scored; evaluating methods={methods} thresholds={thresholds}")
@@ -445,6 +473,8 @@ def main(argv=None) -> int:
     summary = summarize(rows, horizon_s)
     params = {"origin_step_s": args.origin_step_s, "horizon_min": args.horizon_min,
               "lookback_min": DEFAULT_LOOKBACK_S / 60, "since": args.since, "until": args.until}
+    if args.since:
+        params["failing lives excluded because they started before --since"] = before_window
     write_report(out / "report.md", args.namespace, lives, cases, summary, params, thresholds)
     print(f"done in {time.monotonic() - started:.0f}s: {out / 'report.md'}, {out / 'decisions.csv'} ({len(rows)} rows)")
     return 0
