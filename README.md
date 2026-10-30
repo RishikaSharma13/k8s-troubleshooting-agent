@@ -1,5 +1,7 @@
 # Kubernetes Failure Prediction
 
+[![tests](https://github.com/RishikaSharma13/k8s-troubleshooting-agent/actions/workflows/tests.yml/badge.svg)](https://github.com/RishikaSharma13/k8s-troubleshooting-agent/actions/workflows/tests.yml)
+
 Predicts **when** a Kubernetes workload will fail, early enough to act, and measures whether that prediction is
 actually better than a simple threshold alert.
 
