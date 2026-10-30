@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, Column, String, Integer, Float, DateTime, ForeignKey, Enum
+from sqlalchemy import text, create_engine, Column, String, Integer, Float, DateTime, ForeignKey, Enum
 from sqlalchemy import BigInteger, Index, UniqueConstraint, func
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 from datetime import datetime
@@ -40,6 +40,10 @@ class ActionStatus(PyEnum):
 # ============================================================
 class Incident(Base):
     __tablename__ = "incidents"
+    __table_args__ = (
+        Index("uq_incidents_forecast_life", "namespace", "deployment", "pod_name", "life_started_at",
+              unique=True, postgresql_where=text("source = 'forecast'")),
+    )
     
     # Primary key
     id = Column(String(36), primary_key=True)  # UUID
@@ -59,6 +63,12 @@ class Incident(Base):
     # Recommendation
     recommended_action = Column(String(100))
     approved_action = Column(String(100), nullable=True)  # the exact action a human approved
+
+    # Incidents raised by the forecaster (source="forecast"); empty for the original restart-count incidents
+    source = Column(String(50), nullable=True)
+    predicted_failure_at = Column(DateTime(timezone=True), nullable=True)  # when the forecast expects the failure
+    life_started_at = Column(DateTime(timezone=True), nullable=True)       # which container life it is about
+    outcome = Column(String(50), nullable=True)                            # AVOIDED / NOT_AVOIDED (verification)
     confidence = Column(Float)  # 0-100%
     reasoning = Column(String(500))  # Why this action was recommended
     

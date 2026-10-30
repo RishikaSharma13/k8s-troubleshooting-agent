@@ -1,0 +1,97 @@
+# Remediation test area: SEPARATE from predict-lab, so actions never disturb the evaluation's ground truth.
+# leak-remediate is an exact copy of predict-lab/leak-steady (+2 MiB every 10 s, 256Mi limit, OOMKilled ~every 21 min).
+# The namespace label reliability-agent/remediation=allowed marks it as a place where approved actions may run.
+# Remove everything with:  kubectl delete namespace remediate-lab
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: remediate-lab
+  labels:
+    purpose: remediation-tests
+    reliability-agent/remediation: allowed
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: memload-script
+  namespace: remediate-lab
+data:
+  memload.py: "\"\"\"Memory load generator for the prediction scenarios (predict-lab\
+    \ namespace).\n\nMODE=ramp: allocate STEP_MIB every INTERVAL_S seconds until the\
+    \ container is\n           OOMKilled (a leak-like workload; ground truth = the\
+    \ OOMKill time).\nMODE=flat: hold BASE_MIB, toggling an extra JITTER_MIB every\
+    \ JITTER_PERIOD_S\n           seconds (a steady, hot workload that never OOMs;\
+    \ false-alarm test).\n\nMemory is written, not just reserved, so it counts toward\
+    \ the container's\nworking set. Every change is logged with a UTC timestamp.\n\
+    \"\"\"\nimport os\nimport time\n\nMiB = 1024 * 1024\n\n\ndef allocate(mib: int)\
+    \ -> bytearray:\n    return bytearray(b\"\\x01\") * (mib * MiB)  # writes every\
+    \ byte, so pages are resident\n\n\ndef log(message: str) -> None:\n    print(time.strftime(\"\
+    %Y-%m-%dT%H:%M:%SZ\", time.gmtime()), message, flush=True)\n\n\ndef ramp() ->\
+    \ None:\n    step = int(os.environ.get(\"STEP_MIB\", \"2\"))\n    interval = float(os.environ.get(\"\
+    INTERVAL_S\", \"10\"))\n    held, total = [], 0\n    log(f\"mode=ramp step_mib={step}\
+    \ interval_s={interval}\")\n    while True:\n        time.sleep(interval)\n  \
+    \      held.append(allocate(step))\n        total += step\n        log(f\"allocated_mib={total}\"\
+    )\n\n\ndef flat() -> None:\n    base = int(os.environ.get(\"BASE_MIB\", \"195\"\
+    ))\n    jitter = int(os.environ.get(\"JITTER_MIB\", \"8\"))\n    period = float(os.environ.get(\"\
+    JITTER_PERIOD_S\", \"30\"))\n    held = allocate(base)\n    extra = None\n   \
+    \ log(f\"mode=flat base_mib={base} jitter_mib={jitter} period_s={period}\")\n\
+    \    while True:\n        time.sleep(period)\n        extra = None if extra is\
+    \ not None else allocate(jitter)\n        log(f\"allocated_mib={base + (jitter\
+    \ if extra is not None else 0)}\")\n\n\nif __name__ == \"__main__\":\n    {\"\
+    ramp\": ramp, \"flat\": flat}[os.environ.get(\"MODE\", \"ramp\")]()\n"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: leak-remediate
+  namespace: remediate-lab
+  labels:
+    app: leak-remediate
+    scenario: memory-prediction
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: leak-remediate
+  template:
+    metadata:
+      labels:
+        app: leak-remediate
+        scenario: memory-prediction
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+      containers:
+      - name: memload
+        image: python:3.12-alpine
+        imagePullPolicy: IfNotPresent
+        command:
+        - python
+        - -u
+        - /scripts/memload.py
+        env:
+        - name: MODE
+          value: ramp
+        - name: STEP_MIB
+          value: '2'
+        - name: INTERVAL_S
+          value: '10'
+        resources:
+          requests:
+            memory: 64Mi
+            cpu: 10m
+          limits:
+            memory: 256Mi
+            cpu: 200m
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+        volumeMounts:
+        - name: scripts
+          mountPath: /scripts
+          readOnly: true
+      volumes:
+      - name: scripts
+        configMap:
+          name: memload-script
