@@ -1,5 +1,7 @@
 """Tests for the safe remediation executor, using a stand-in kubectl that records every command."""
 import json
+import shutil
+import subprocess
 import unittest
 from datetime import datetime, timezone
 
@@ -18,7 +20,7 @@ class FakeKubectl:
         self.calls, self.labelled, self.limit, self.fail, self.containers = [], labelled, limit, set(fail), containers
 
     def writes(self):
-        return [c for c in self.calls if c[0] in ("rollout", "set") and c[1] != "status"]
+        return [c for c in self.calls if c[0] in ("patch", "set")]
 
     def run(self, *args, timeout=30):
         self.calls.append(list(args))
@@ -40,7 +42,7 @@ class FakeKubectl:
             return bad("admission webhook denied") if "dry" in self.fail else ok("deployment.apps/leak-x configured (server dry run)")
         if a[:2] == ["rollout", "status"]:
             return bad("timed out waiting") if "rollout" in self.fail else ok('deployment "leak-x" successfully rolled out')
-        if a[0] in ("rollout", "set"):
+        if a[0] in ("patch", "set"):
             return bad("forbidden") if "real" in self.fail else ok("deployment.apps/leak-x restarted")
         return bad("unexpected command")
 
@@ -91,11 +93,12 @@ class TestSafeExecutor(unittest.TestCase):
     def test_restart_dry_run_first_then_recorded(self):
         k, result, row, ev = self._run("RESTART_DEPLOYMENT")
         self.assertEqual((result["status"], row.status), ("COMPLETED", "SUCCESS"))
-        cmds = [" ".join(c) for c in k.calls if c[0] == "rollout" and c[1] == "restart"]
-        self.assertEqual(cmds, [f"rollout restart deployment/{DEP} -n {NS} --dry-run=server",
-                                f"rollout restart deployment/{DEP} -n {NS}"])                 # dry run first
-        self.assertEqual((ev["before"]["pods"][0]["restarts"], "after" in ev, ev["command"]),
-                         (7, True, f"kubectl rollout restart deployment/{DEP} -n {NS}"))
+        patches = [c for c in k.calls if c[0] == "patch"]
+        self.assertEqual(len(patches), 2)
+        self.assertEqual(patches[0], patches[1] + ["--dry-run=server"])                    # same command, dry run first
+        self.assertIn('"kubectl.kubernetes.io/restartedAt"', patches[1][-1])
+        self.assertEqual((ev["before"]["pods"][0]["restarts"], "after" in ev), (7, True))
+        self.assertTrue(ev["command"].startswith(f"kubectl patch deployment/{DEP} -n {NS} --type=strategic -p "))
 
     def test_memory_increase_is_50_percent_of_the_real_limit(self):
         k, result, row, ev = self._run("INCREASE_MEMORY_LIMIT")
@@ -152,3 +155,15 @@ class TestSafeExecutor(unittest.TestCase):
             self.assertEqual((ok["status"], ok["new_status"]), ("success", "EXECUTING"))
         finally:
             predictor_routes.remediation_executor = original
+
+
+@pytest.mark.skipif(shutil.which("kubectl") is None, reason="needs a real kubectl (skipped in CI)")
+def test_every_write_command_supports_dry_run_on_this_kubectl():
+    """The stand-in kubectl accepts any flag, so it cannot catch an unsupported --dry-run; the real one can."""
+    from app.remediation.actions import SafeRemediationExecutor
+    before = {"pods": [{"name": "p"}], "memory_limits": {"memload": "256Mi"}}
+    for action in ("RESTART_DEPLOYMENT", "INCREASE_MEMORY_LIMIT"):
+        args, _, _ = SafeRemediationExecutor.build_command(action, "ns", "dep", before)
+        verb = [a for a in args[:2] if not a.startswith("deployment/")]
+        help_text = subprocess.run(["kubectl", *verb, "--help"], capture_output=True, text=True).stdout
+        assert "--dry-run" in help_text, f"kubectl {' '.join(verb)} has no --dry-run flag"

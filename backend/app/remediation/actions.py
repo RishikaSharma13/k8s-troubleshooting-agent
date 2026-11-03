@@ -11,6 +11,8 @@ and the action must equal the approved action). This module adds the cluster-sid
    the limit actually read, capped at 1 GiB; if a limit cannot be read the action is refused
    (never guessed).
 5. The same command runs first as a server-side dry run; if that fails, nothing changes.
+   (A restart is done as `kubectl patch` of the restartedAt annotation, which is exactly what
+   `kubectl rollout restart` does, because `rollout restart` has no --dry-run flag.)
 6. The command runs, the rollout is awaited, an "after" snapshot is taken.
 7. Every attempt is stored in `executions` (SUCCESS, FAILED or REFUSED) with the evidence.
 """
@@ -86,8 +88,12 @@ class SafeRemediationExecutor:
     def build_command(action: str, namespace: str, deployment: str, before: dict) -> tuple[list[str], str, str]:
         """(kubectl args, old value, new value) for the action. Raises Refused rather than guessing."""
         if action == "RESTART_DEPLOYMENT":
-            return (["rollout", "restart", f"deployment/{deployment}", "-n", namespace],
-                    ",".join(p["name"] for p in before["pods"]) or "-", "new pods (rolling restart)")
+            # What `kubectl rollout restart` does, as a patch, because only `patch` supports --dry-run=server
+            stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            body = json.dumps({"spec": {"template": {"metadata": {"annotations": {
+                "kubectl.kubernetes.io/restartedAt": stamp}}}}}, separators=(",", ":"))
+            return (["patch", f"deployment/{deployment}", "-n", namespace, "--type=strategic", "-p", body],
+                    ",".join(p["name"] for p in before["pods"]) or "-", f"new pods (restartedAt {stamp})")
         if action == "INCREASE_MEMORY_LIMIT":
             limits = before["memory_limits"]
             if not limits or any(not v for v in limits.values()):
