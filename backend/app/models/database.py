@@ -1,4 +1,4 @@
-from sqlalchemy import text, create_engine, Column, String, Integer, Float, DateTime, ForeignKey, Enum
+from sqlalchemy import text, Text, create_engine, Column, String, Integer, Float, DateTime, ForeignKey, Enum
 from sqlalchemy import BigInteger, Index, UniqueConstraint, func
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 from datetime import datetime
@@ -106,6 +106,7 @@ class Execution(Base):
     # Results
     improvement_percentage = Column(Float, default=0.0)
     error_message = Column(String(500), nullable=True)
+    evidence = Column(Text, nullable=True)  # JSON: before/after snapshots, command, dry run, rollout
     
     # Timestamps
     executed_at = Column(DateTime, default=datetime.utcnow)

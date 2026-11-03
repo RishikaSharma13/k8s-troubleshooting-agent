@@ -4,7 +4,7 @@ from loguru import logger
 
 from app.predictor.metrics_collector import MetricsCollector
 from app.predictor.action_planner import ActionPlanner
-from app.predictor.remediation_executor import RemediationExecutor
+from app.remediation.actions import SafeRemediationExecutor
 from app.predictor.verifier import Verifier
 from app.predictor.forecaster import Forecaster
 from app.kubernetes.kubectl_executor import KubectlExecutor
@@ -16,7 +16,7 @@ router = APIRouter(prefix="/api/v1", tags=["predictor"])
 # Global predictor/remediation instances
 collector = MetricsCollector()
 kubectl_executor = KubectlExecutor()
-remediation_executor = RemediationExecutor(kubectl_executor)
+remediation_executor = SafeRemediationExecutor(kubectl_executor)
 verifier = Verifier(collector)
 
 
