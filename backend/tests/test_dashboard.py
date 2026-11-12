@@ -124,3 +124,60 @@ class TestFullPage(unittest.TestCase):
             self.assertIn(section, page)
         self.assertIn("disk-leak", page)
         self.assertIn("deadline-job-1", page)
+
+
+@pytest.mark.db
+class TestRemediationSection(unittest.TestCase):
+    """Section 7: incidents, verdicts and executions, from the test database."""
+
+    def setUp(self):
+        from app.models.database import Execution, Incident, SessionLocal
+        self.E, self.I, self.Session = Execution, Incident, SessionLocal
+        self._cleanup()
+
+    def tearDown(self):
+        self._cleanup()
+
+    def _cleanup(self):
+        db = self.Session()
+        try:
+            db.query(self.E).filter(self.E.incident_id.like("pytest-d-%")).delete(synchronize_session=False)
+            db.query(self.I).filter(self.I.id.like("pytest-d-%")).delete(synchronize_session=False)
+            db.commit()
+        finally:
+            db.close()
+
+    def test_empty_when_no_forecast_incidents(self):
+        self.assertEqual(dashboard.remediation_section(), "")
+
+    def test_verdicts_errors_and_evidence(self):
+        import json as _json
+        p = datetime(2026, 11, 3, 8, 0, tzinfo=timezone.utc)
+        rows = []
+        for n, (outcome, status, detail) in enumerate([
+                ("CONFIRMED", "EXPIRED", {"prediction_error_s": 25, "minutes_ahead": 18.5}),
+                ("AVOIDED", "RESOLVED", {"minutes_ahead": 15.3}),
+                (None, "PENDING", {})]):
+            rows.append(self.I(id=f"pytest-d-{n}", pod_name="leak-p", deployment="leak-remediate", namespace="ns",
+                               risk_score=50, risk_level="HIGH", status=status, recommended_action="RESTART_DEPLOYMENT",
+                               source="forecast", predicted_failure_at=p + timedelta(minutes=20 * n),
+                               life_started_at=p + timedelta(minutes=20 * n), outcome=outcome,
+                               outcome_detail=_json.dumps(detail) if detail else None))
+        rows.append(self.E(id="pytest-d-1-x", incident_id="pytest-d-1", action="RESTART_DEPLOYMENT", status="SUCCESS",
+                           executed_at=datetime(2026, 11, 3, 8, 5), evidence=_json.dumps({
+                               "command": "kubectl patch deployment/leak-remediate -n remediate-lab ...",
+                               "dry_run": "deployment.apps/leak-remediate patched",
+                               "verification": {"outcome": "AVOIDED"}})))
+        db = self.Session()
+        try:
+            for r in rows:
+                db.add(r)
+                db.flush()
+            db.commit()
+        finally:
+            db.close()
+        html = dashboard.remediation_section()
+        for text in ("7. Closing the loop", "<b>AVOIDED</b>: 1", "<b>CONFIRMED</b>: 1", "median error <b>25 s</b>", "predicted a median <b>18.5 min</b> ahead",
+                     "error +25 s", "acted 15.3 min ahead", "awaiting approval", "kubectl patch deployment/leak-remediate",
+                     "histogram of live prediction errors"):
+            self.assertIn(text, html)
