@@ -68,7 +68,8 @@ class Incident(Base):
     source = Column(String(50), nullable=True)
     predicted_failure_at = Column(DateTime(timezone=True), nullable=True)  # when the forecast expects the failure
     life_started_at = Column(DateTime(timezone=True), nullable=True)       # which container life it is about
-    outcome = Column(String(50), nullable=True)                            # AVOIDED / NOT_AVOIDED (verification)
+    outcome = Column(String(50), nullable=True)            # AVOIDED / NOT_AVOIDED / CONFIRMED / NOT_CONFIRMED / UNVERIFIABLE
+    outcome_detail = Column(Text, nullable=True)           # JSON evidence for the outcome (times, crash, error)
     confidence = Column(Float)  # 0-100%
     reasoning = Column(String(500))  # Why this action was recommended
     
