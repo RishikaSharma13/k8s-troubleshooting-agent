@@ -12,6 +12,8 @@ eviction, and Job deadlines.
 import argparse
 import base64
 import html
+import statistics
+import json
 import io
 import logging
 from datetime import datetime, timedelta, timezone
@@ -295,6 +297,81 @@ def jobs_section(n_jobs=8):
     return "\n".join(reversed(table)), png(fig)
 
 
+def remediation_section(limit: int = 12) -> str:
+    """Section 7: forecast incidents, their verdicts, and the executions with their evidence."""
+    from app.models.database import Execution, Incident, SessionLocal
+    db = SessionLocal()
+    try:
+        incidents = (db.query(Incident).filter(Incident.source == "forecast")
+                     .order_by(Incident.predicted_failure_at.desc()).all())
+        executions = db.query(Execution).order_by(Execution.executed_at.desc()).limit(5).all()
+    finally:
+        db.close()
+    if not incidents:
+        return ""
+    ist = lambda t: (t if t.tzinfo else t.replace(tzinfo=timezone.utc)).astimezone(IST) if t else None
+    counts, errors, ahead, warned = {}, [], [], []
+    for i in incidents:
+        if i.outcome:
+            counts[i.outcome] = counts.get(i.outcome, 0) + 1
+            d = json.loads(i.outcome_detail or "{}")
+            if i.outcome == "CONFIRMED" and "prediction_error_s" in d:
+                errors.append(d["prediction_error_s"])
+                if "minutes_ahead" in d:
+                    warned.append(d["minutes_ahead"])
+            if i.outcome in ("AVOIDED", "NOT_AVOIDED") and "minutes_ahead" in d:
+                ahead.append(d["minutes_ahead"])
+    summary = " &nbsp;·&nbsp; ".join(f"<b>{k}</b>: {v}" for k, v in sorted(counts.items())) or "no verdicts yet"
+    facts = []
+    if errors:
+        facts.append(f"Not acted on: {len(errors)} predicted crashes came true, median error "
+                     f"<b>{statistics.median(abs(e) for e in errors):.0f} s</b> (max {max(abs(e) for e in errors)} s)"
+                     + (f", predicted a median <b>{statistics.median(warned):.1f} min</b> ahead." if warned else "."))
+    if ahead:
+        facts.append(f"Acted on: approved actions ran a median <b>{statistics.median(ahead):.1f} min</b> before the predicted crash.")
+    chart = ""
+    if errors:
+        fig, ax = plt.subplots(figsize=(8, 2.6))
+        ax.hist(errors, bins=min(30, max(5, len(errors) // 3)), color="#4c72b0")
+        ax.axvline(0, color="black", lw=1)
+        ax.set_xlabel("actual crash minus predicted crash (seconds); negative = crash came early")
+        ax.set_ylabel("incidents")
+        ax.set_title(f"Live prediction error, {len(errors)} predictions"
+                     + (f" made a median {statistics.median(warned):.0f} min ahead" if warned else ""))
+        ax.grid(alpha=0.25)
+        chart = f'<img src="data:image/png;base64,{png(fig)}" alt="histogram of live prediction errors">'
+    style = {"AVOIDED": "ok", "CONFIRMED": "ok", "NOT_AVOIDED": "warn", "NOT_CONFIRMED": "warn"}
+    rows = []
+    for i in incidents[:limit]:
+        d = json.loads(i.outcome_detail or "{}")
+        verdict = i.outcome or ("awaiting approval" if i.status == "PENDING" else "awaiting verification")
+        extra = (f"error {d['prediction_error_s']:+d} s" if "prediction_error_s" in d else
+                 f"acted {d['minutes_ahead']} min ahead" if i.outcome in ("AVOIDED", "NOT_AVOIDED") and "minutes_ahead" in d
+                 else html.escape(d.get("note", "")))
+        rows.append(f"<tr><td>{i.deployment}</td><td>{ist(i.predicted_failure_at):%m-%d %H:%M:%S}</td><td>{i.status}</td>"
+                    f"<td class='{style.get(i.outcome, 'muted')}'>{verdict}</td><td>{extra}</td></tr>")
+    ex_rows = []
+    for e in executions:
+        ev = json.loads(e.evidence or "{}")
+        verdict = (ev.get("verification") or {}).get("outcome", "not yet verified")
+        ex_rows.append(
+            f"<tr><td>{ist(e.executed_at):%m-%d %H:%M:%S}</td><td>{e.action}</td>"
+            f"<td class='{'ok' if e.status == 'SUCCESS' else 'warn'}'>{e.status}</td><td>{verdict}</td>"
+            f"<td><code>{html.escape((ev.get('command') or '-')[:90])}</code><br>"
+            f"<span class='muted'>dry run: {html.escape((ev.get('dry_run') or '-')[:80])}"
+            f"{' &nbsp;|&nbsp; error: ' + html.escape(e.error_message[:80]) if e.error_message else ''}</span></td></tr>")
+    return ('<div class="card"><h2>7. Closing the loop: predicted, approved, executed, verified</h2>'
+            f"<p>{summary}</p>" + "".join(f"<p>{f}</p>" for f in facts) + chart +
+            "<h3>Recent incidents</h3><table><tr><th>workload</th><th>predicted crash (IST)</th><th>status</th>"
+            "<th>verdict</th><th>detail</th></tr>" + "".join(rows) + "</table>"
+            "<h3>Recent executions (every attempt is recorded)</h3><table><tr><th>time (IST)</th><th>action</th>"
+            "<th>result</th><th>verified</th><th>command and dry run</th></tr>" + ("".join(ex_rows) or
+            "<tr><td colspan=5 class='muted'>none yet</td></tr>") + "</table>"
+            '<p class="note">Incidents are raised automatically; nothing runs without approval of that exact action, '
+            "a server-side dry run, and an allow-listed namespace. Verdicts come from recorded data only; "
+            "UNVERIFIABLE means there was no data (e.g. the collector was not running).</p></div>")
+
+
 def new_prediction_sections(storage_table, storage_chart, jobs_table, jobs_chart, sig_summary) -> str:
     """HTML for sections 4-6 (kept out of the page template: Python 3.10 has no nested f-strings)."""
     if storage_chart:
@@ -381,6 +458,7 @@ def main():
     jobs_table, jobs_chart = jobs_section()
     sig_summary = signals_summary(args.signals_report)
     extra_sections = new_prediction_sections(storage_table, storage_chart, jobs_table, jobs_chart, sig_summary)
+    extra_sections += remediation_section()
     gen = datetime.now(timezone.utc).astimezone(IST)
     table = "\n".join(
         f"<tr><td>{d}</td><td>{m}</td><td>{n}</td><td class='{'warn' if a == 'FIRING' else 'ok'}'>{a}</td>"
