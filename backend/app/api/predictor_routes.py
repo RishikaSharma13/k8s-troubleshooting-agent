@@ -1,3 +1,8 @@
+import json
+from typing import Optional
+
+from app.models.database import Incident, SessionLocal
+from app.remediation.verify import verify_due
 from fastapi import APIRouter, Query
 from app.predictor.auto_remediation_policy import AutoRemediationPolicy, RiskLevel
 from loguru import logger
@@ -5,7 +10,6 @@ from loguru import logger
 from app.predictor.metrics_collector import MetricsCollector
 from app.predictor.action_planner import ActionPlanner
 from app.remediation.actions import SafeRemediationExecutor
-from app.predictor.verifier import Verifier
 from app.predictor.forecaster import Forecaster
 from app.kubernetes.kubectl_executor import KubectlExecutor
 
@@ -17,7 +21,6 @@ router = APIRouter(prefix="/api/v1", tags=["predictor"])
 collector = MetricsCollector()
 kubectl_executor = KubectlExecutor()
 remediation_executor = SafeRemediationExecutor(kubectl_executor)
-verifier = Verifier(collector)
 
 
 @router.get("/risks/scan-namespace")
@@ -310,62 +313,30 @@ async def execute_remediation(
 @router.post("/remediation/verify")
 async def verify_remediation(
     incident_id: str = Query(...),
-    execution_id: str = Query(...),
+    execution_id: Optional[str] = Query(None, description="Not needed; kept for older clients"),
 ) -> dict:
     """
-    Verify whether the remediation actually fixed the issue.
+    Verify one forecast incident at the deployment level, from recorded data
+    (see app/remediation/verify.py). Before its window has closed, the answer is "pending".
     """
-    logger.info(
-        f"Verifying remediation for incident {incident_id}, "
-        f"execution {execution_id}"
-    )
-
-    # Get incident
+    done = verify_due(incident_id=incident_id)
     incident = collector.risk_manager.get_incident(incident_id)
-
     if not incident:
-        return {
-            "status": "error",
-            "error": f"Incident {incident_id} not found",
-            "incident_id": incident_id,
-        }
-
-    # Verification only makes sense after execution started
-    if incident.status != "EXECUTING":
-        return {
-            "status": "error",
-            "error": (
-                f"Incident must be EXECUTING before verification. "
-                f"Current status: {incident.status}"
-            ),
-            "incident_id": incident_id,
-        }
-
-    # Run verification
-    verification_result = verifier.verify_fix(
-        incident=incident,
-        execution_id=execution_id,
-    )
-
-    verification_status = verification_result.get("status")
-
-    if verification_status == "RESOLVED":
-        new_status = "RESOLVED"
-    else:
-        new_status = "FAILED"
-
-    # Update incident lifecycle
-    collector.risk_manager.update_incident_status(
-        incident_id,
-        new_status,
-    )
-
-    return {
-        "status": "success",
-        "incident_id": incident_id,
-        "verification_result": verification_result,
-        "new_incident_status": new_status,
-    }
+        return {"status": "error", "error": f"Incident {incident_id} not found", "incident_id": incident_id}
+    db = SessionLocal()
+    try:
+        row = db.get(Incident, incident_id)
+        outcome, detail = row.outcome, json.loads(row.outcome_detail or "{}")
+        source, predicted = row.source, row.predicted_failure_at
+    finally:
+        db.close()
+    if source != "forecast":
+        return {"status": "error", "error": "Only forecast incidents can be verified.", "incident_id": incident_id}
+    if outcome is None:
+        return {"status": "pending", "incident_id": incident_id,
+                "message": f"Too early: verified 6 minutes after the predicted failure time ({predicted} UTC)."}
+    return {"status": "success", "incident_id": incident_id, "outcome": outcome,
+            "newly_verified": bool(done), "new_incident_status": incident.status, "details": detail}
 
 
 @router.get("/remediation/status")

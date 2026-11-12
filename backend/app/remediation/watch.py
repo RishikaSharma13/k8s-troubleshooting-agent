@@ -140,6 +140,11 @@ def main(argv=None) -> int:
                 logger.info("Scan {}: {} predicted within 30 min, {} new incident(s)", ns, len(preds), new)
             except Exception as exc:          # one bad scan must not stop the watcher
                 logger.exception("Scan of {} failed: {}", ns, exc)
+        try:                                   # label incidents whose predicted time has passed
+            from app.remediation.verify import verify_due
+            verify_due()
+        except Exception as exc:
+            logger.exception("Verification failed: {}", exc)
         if args.once:
             return 0
         time.sleep(args.interval)
