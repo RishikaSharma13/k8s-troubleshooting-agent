@@ -50,8 +50,9 @@ flowchart TD
 4. **Show.** A read-only HTML dashboard shows live forecasts next to what a threshold alert would be doing, plus the
    evaluation results.
 
-Remediation is **human-approved**: an approval names one exact action, and execution refuses anything else.
-Nothing runs automatically.
+5. **Act and verify.** A predicted crash becomes an incident with a recommended action. A person approves one exact
+   action; it runs only after a server-side dry run, and the system then checks by itself whether the crash was
+   avoided. Nothing runs automatically. See [Closing the loop](#closing-the-loop-predict-approve-execute-verify).
 
 ---
 
@@ -107,6 +108,41 @@ At the halfway point the predicted finish time was accurate to about 7 seconds (
 - **Disk is re-measured only every ~70–100 s** by the kubelet, so storage predictions are coarser than memory ones.
 - **The startup-step fix was not re-tested on unseen data:** `disk-flat` did not restart inside the window.
 - **Controlled workloads in one local cluster:** this demonstrates the method, not production accuracy.
+
+---
+
+## Closing the loop: predict, approve, execute, verify
+
+The forecasts drive a human-approved remediation loop, tested in its own namespace (`remediate-lab`) so it never
+disturbs the evaluation workloads:
+
+1. **Predict.** A watcher forecasts each workload every minute. When a memory crash is predicted within 30 minutes it
+   raises **one incident per container life** (the database refuses duplicates), with the predicted crash time, a
+   recommended action and the forecast's own numbers as reasoning. No invented confidence score.
+2. **Approve.** A person approves **one exact action** (`/actions/approve`); anything else is refused at execution.
+3. **Execute safely.** Only `RESTART_DEPLOYMENT` and `INCREASE_MEMORY_LIMIT` exist; the namespace must carry the
+   label `reliability-agent/remediation=allowed` (read live); the exact command runs first as a **server-side dry
+   run**; the rollout is awaited; before and after snapshots are kept. **Every attempt is recorded**, including
+   refusals and failures. A memory increase is +50% of the limit actually read (capped at 1 GiB), refused rather than
+   guessed.
+4. **Verify.** After the predicted crash time (+5 minutes) each incident gets a verdict, at deployment level and from
+   recorded data only: **AVOIDED / NOT_AVOIDED** if acted on, **CONFIRMED / NOT_CONFIRMED** if not, and
+   **UNVERIFIABLE** when there is no data (for example the collector was not running): no claim either way.
+
+### Live results (12 Nov 2026)
+
+| Verdict | Incidents | What it shows |
+|---|---|---|
+| CONFIRMED | **84** | Unacted predictions that came true: median error **16 s** (max 168 s), made a median **18.1 min** ahead |
+| NOT_CONFIRMED | **0** | No prediction with data failed to come true |
+| AVOIDED | **1** | An approved restart, run 15.3 min before the predicted crash: the crash did not happen |
+| UNVERIFIABLE | **7** | No data (laptop off), or one action taken before executions were recorded |
+
+These are predictions made **in advance and automatically**, not a backtest. Honest notes: AVOIDED rests on a single
+example so far; and a restart avoids an uncontrolled crash but **does not fix a leak**, as the recommendation itself
+says. The first live restart was **refused** by the executor's own dry run (`kubectl rollout restart` has no
+`--dry-run`); it is now done as the equivalent dry-runnable `kubectl patch`, and a test checks every command against
+the real kubectl.
 
 ---
 
@@ -168,6 +204,24 @@ PYTHONPATH=backend python -m app.predictor.dashboard --out dashboard.html \
   --report docs/results/final-memory.md --signals-report docs/results/final-storage-jobs.md
 ```
 
+### Close the loop
+
+```bash
+# Watcher (raises incidents and verifies them) and API, as background services
+systemd-run --user --unit=k8s-watch --working-directory="$PWD" --setenv=DATABASE_URL="$DATABASE_URL" \
+  --setenv=PYTHONPATH=backend "$PWD/venv/bin/python" -m app.remediation.watch --namespace remediate-lab
+systemd-run --user --unit=k8s-api --working-directory="$PWD" --setenv=DATABASE_URL="$DATABASE_URL" \
+  --setenv=PYTHONPATH=backend --setenv=PATH="$PATH" \
+  "$PWD/venv/bin/python" -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000
+
+# Approve and execute one incident (ID from the incidents table)
+curl -X POST "localhost:8000/api/v1/actions/approve?incident_id=$INC&action=RESTART_DEPLOYMENT"
+curl -X POST "localhost:8000/api/v1/remediation/execute?incident_id=$INC&action=RESTART_DEPLOYMENT"
+
+# Verdicts so far
+PYTHONPATH=backend python -m app.remediation.verify --report
+```
+
 ### Tests
 
 ```bash
@@ -187,11 +241,13 @@ backend/app/collector/     memory_collector.py, signals.py, run.py   - collectio
 backend/app/predictor/     memory_forecast.py                        - time-to-limit forecasts
                            evaluate.py, evaluate_signals.py          - backtests
                            dashboard.py                              - read-only HTML dashboard
+backend/app/remediation/   watch.py, actions.py, verify.py           - incidents, safe execution, verification
 backend/app/api/           predictor_routes.py                       - incidents, approval, remediation API
 backend/app/models/        database.py                               - tables
 backend/tests/             automated tests (conftest.py guards the real database)
 alembic/versions/          database migrations
 docs/testing/predict-lab/  test workloads with known behaviour
+docs/testing/remediate-lab/ the workload that remediation acts on (kept separate)
 docs/results/              committed evaluation reports
 ```
 
@@ -212,12 +268,19 @@ docs/results/              committed evaluation reports
 - **Report refusals.** One fix looked like a big improvement until it turned out the forecaster was refusing to answer;
   every report now shows how often it declined.
 - **Approval binds one exact action.** Execution refuses any other action.
+- **Dry run first, and let it say no.** The executor's dry run refused the first live restart because of a bug of mine
+  (an unsupported flag); nothing changed, and the refusal was recorded with its evidence.
+- **No data, no verdict.** When the collector was not running, verification says UNVERIFIABLE rather than reporting
+  that a predicted crash "did not happen".
+- **Remove unsafe paths; deploy only what is merged.** The old executor (no dry run, guessed limits, no records) ran
+  once because a service was restarted before the new code was merged. It was deleted, not kept beside the new one,
+  and every deployment now starts with a check that the merged code is really there.
 
 ---
 
 ## What's next
 
-- Connect forecasts to the approval → execution → verified-recovery workflow.
+- More approved actions, so that AVOIDED rests on more than one example; then low-risk automatic actions.
 - Test on workloads with daily patterns and changing growth, where Prophet could matter.
 - Calibrate prediction intervals.
 - Count distinct incidents and alert volume, as a production system would need.

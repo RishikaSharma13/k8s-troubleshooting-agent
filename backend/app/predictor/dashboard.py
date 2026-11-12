@@ -353,7 +353,8 @@ def remediation_section(limit: int = 12) -> str:
     ex_rows = []
     for e in executions:
         ev = json.loads(e.evidence or "{}")
-        verdict = (ev.get("verification") or {}).get("outcome", "not yet verified")
+        verdict = ((ev.get("verification") or {}).get("outcome")
+                   or ("— (refused: nothing ran)" if e.status == "REFUSED" else "not yet verified"))
         ex_rows.append(
             f"<tr><td>{ist(e.executed_at):%m-%d %H:%M:%S}</td><td>{e.action}</td>"
             f"<td class='{'ok' if e.status == 'SUCCESS' else 'warn'}'>{e.status}</td><td>{verdict}</td>"
