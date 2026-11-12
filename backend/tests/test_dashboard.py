@@ -168,6 +168,9 @@ class TestRemediationSection(unittest.TestCase):
                                "command": "kubectl patch deployment/leak-remediate -n remediate-lab ...",
                                "dry_run": "deployment.apps/leak-remediate patched",
                                "verification": {"outcome": "AVOIDED"}})))
+        rows.append(self.E(id="pytest-d-2-x", incident_id="pytest-d-2", action="RESTART_DEPLOYMENT", status="REFUSED",
+                           executed_at=datetime(2026, 11, 3, 7, 50), error_message="server-side dry run failed",
+                           evidence=_json.dumps({"command": "kubectl rollout restart deployment/leak-remediate"})))
         db = self.Session()
         try:
             for r in rows:
@@ -179,5 +182,5 @@ class TestRemediationSection(unittest.TestCase):
         html = dashboard.remediation_section()
         for text in ("7. Closing the loop", "<b>AVOIDED</b>: 1", "<b>CONFIRMED</b>: 1", "median error <b>25 s</b>", "predicted a median <b>18.5 min</b> ahead",
                      "error +25 s", "acted 15.3 min ahead", "awaiting approval", "kubectl patch deployment/leak-remediate",
-                     "histogram of live prediction errors"):
+                     "histogram of live prediction errors", "refused: nothing ran"):
             self.assertIn(text, html)
