@@ -120,36 +120,46 @@ class Experiment:
         return made
 
 
-def summary(log: Path, session_factory: Callable = SessionLocal) -> str:
+def group_outcomes(log: Path, session_factory: Callable = SessionLocal) -> dict:
+    """{"treated"/"control": {"n", "tally", "ahead", "next_crash"}} joined with the verified outcomes."""
     entries = read_log(log)
+    groups = {g: {"n": 0, "tally": {}, "ahead": [], "next_crash": []} for g in ("treated", "control")}
     if not entries:
-        return "no experiment entries yet"
+        return groups
     db = session_factory()
     try:
         outcome = {i.id: (i.outcome, i.outcome_detail) for i in
                    db.query(Incident).filter(Incident.id.in_([e["incident_id"] for e in entries])).all()}
     finally:
         db.close()
+    for e in entries:
+        g = groups[e["group"]]
+        g["n"] += 1
+        o, d = outcome.get(e["incident_id"], (None, None))
+        o = o or "awaiting verification"
+        g["tally"][o] = g["tally"].get(o, 0) + 1
+        d = json.loads(d or "{}")
+        if e["group"] == "treated":
+            if "minutes_ahead" in d:
+                g["ahead"].append(d["minutes_ahead"])
+            if "next_crash_after_predicted_min" in d:
+                g["next_crash"].append(d["next_crash_after_predicted_min"])
+    return groups
+
+
+def summary(log: Path, session_factory: Callable = SessionLocal) -> str:
+    if not read_log(log):
+        return "no experiment entries yet"
+    groups = group_outcomes(log, session_factory)
     lines = []
-    for group in ("treated", "control"):
-        es = [e for e in entries if e["group"] == group]
-        tally: dict[str, int] = {}
-        ahead, nxt = [], []
-        for e in es:
-            o, d = outcome.get(e["incident_id"], (None, None))
-            o = o or "awaiting verification"
-            tally[o] = tally.get(o, 0) + 1
-            d = json.loads(d or "{}")
-            if group == "treated" and "minutes_ahead" in d:
-                ahead.append(d["minutes_ahead"])
-            if group == "treated" and "next_crash_after_predicted_min" in d:
-                nxt.append(d["next_crash_after_predicted_min"])
-        lines.append(f"{group:8} {len(es):3} incidents: " + ", ".join(f"{k} {v}" for k, v in sorted(tally.items())))
-        if ahead:
-            lines.append(f"         actions ran a median {statistics.median(ahead):.1f} min before the predicted crash")
-        if nxt:
-            lines.append(f"         the new container life crashed again in {len(nxt)} case(s), a median "
-                         f"{statistics.median(nxt):+.1f} min after the predicted time (a restart delays a leak)")
+    for name in ("treated", "control"):
+        g = groups[name]
+        lines.append(f"{name:8} {g['n']:3} incidents: " + ", ".join(f"{k} {v}" for k, v in sorted(g["tally"].items())))
+        if g["ahead"]:
+            lines.append(f"         actions ran a median {statistics.median(g['ahead']):.1f} min before the predicted crash")
+        if g["next_crash"]:
+            lines.append(f"         the new container life crashed again in {len(g['next_crash'])} case(s), a median "
+                         f"{statistics.median(g['next_crash']):+.1f} min after the predicted time (a restart delays a leak)")
     return "\n".join(lines)
 
 

@@ -184,3 +184,67 @@ class TestRemediationSection(unittest.TestCase):
                      "error +25 s", "acted 15.3 min ahead", "awaiting approval", "kubectl patch deployment/leak-remediate",
                      "histogram of live prediction errors", "refused: nothing ran"):
             self.assertIn(text, html)
+
+
+@pytest.mark.db
+class TestSummaryTiles(unittest.TestCase):
+    """The headline strip: every figure comes from the report, the database or the experiment log."""
+
+    def setUp(self):
+        from app.models.database import Execution, Incident, SessionLocal
+        self.E, self.I, self.Session = Execution, Incident, SessionLocal
+        self._cleanup()
+        import json as _json, pathlib, tempfile
+        d = pathlib.Path(tempfile.mkdtemp())
+        self.report = d / "mem.md"
+        self.report.write_text(
+            "## flat-hot\n\n| Method | OOM lives | False-alarm rate | Lead time median (min) |\n|---|---|---|---|\n"
+            "| linear | 0 | 0% | - |\n| threshold80 | 0 | 51% | - |\n\n"
+            "## leak-slow\n\n| Method | OOM lives | False-alarm rate | Lead time median (min) |\n|---|---|---|---|\n"
+            "| linear | 145 | - | 29.2 |\n| threshold80 | 145 | - | 7.9 |\n\n"
+            "## leak-steady\n\n| Method | OOM lives | False-alarm rate | Lead time median (min) |\n|---|---|---|---|\n"
+            "| linear | 292 | - | 18.5 |\n| threshold80 | 292 | - | 3.6 |\n")
+        p = datetime(2026, 11, 16, 8, 0, tzinfo=timezone.utc)
+        db = self.Session()
+        try:
+            for n, (o, det) in enumerate([("CONFIRMED", {"prediction_error_s": 10}), ("CONFIRMED", {"prediction_error_s": -20}),
+                                          ("AVOIDED", {"minutes_ahead": 17.8})]):
+                db.add(self.I(id=f"pytest-t-{n}", pod_name="p", deployment="leak-remediate", namespace="ns", risk_score=50,
+                              risk_level="HIGH", status="EXPIRED", recommended_action="RESTART_DEPLOYMENT", source="forecast",
+                              predicted_failure_at=p + timedelta(minutes=20 * n), life_started_at=p + timedelta(minutes=20 * n),
+                              outcome=o, outcome_detail=_json.dumps(det)))
+            db.flush()
+            db.add(self.E(id="pytest-t-x1", incident_id="pytest-t-2", action="RESTART_DEPLOYMENT", status="SUCCESS"))
+            db.add(self.E(id="pytest-t-x2", incident_id="pytest-t-1", action="RESTART_DEPLOYMENT", status="REFUSED"))
+            db.commit()
+        finally:
+            db.close()
+        self.log = d / "exp.jsonl"
+        self.log.write_text('{"incident_id": "pytest-t-2", "group": "treated"}\n{"incident_id": "pytest-t-0", "group": "control"}\n')
+
+    def tearDown(self):
+        self._cleanup()
+
+    def _cleanup(self):
+        db = self.Session()
+        try:
+            db.query(self.E).filter(self.E.incident_id.like("pytest-t-%")).delete(synchronize_session=False)
+            db.query(self.I).filter(self.I.id.like("pytest-t-%")).delete(synchronize_session=False)
+            db.commit()
+        finally:
+            db.close()
+
+    def test_tiles_with_experiment(self):
+        html = dashboard.summary_tiles(dashboard.parse_report(str(self.report)), str(self.log))
+        for text in ("18.5–29.2 min", "a normal 80% alert: 3.6–7.9 min (437 crashes)", "0%", "a normal 80% alert: 51%",
+                     "live predictions came true", "median error 15 s · 0 did not", "1 of 1",
+                     "left alone: 1 of 1 crashed as predicted", "1 executed · 1 refused safely"):
+            self.assertIn(text, html)
+
+    def test_tiles_without_experiment_and_block(self):
+        html = dashboard.summary_tiles(dashboard.parse_report(str(self.report)), None)
+        self.assertIn("crashes prevented by approved actions", html)
+        block = dashboard.experiment_block(str(self.log))
+        self.assertIn("acted on (planned restart)", block)
+        self.assertIn("AVOIDED 1", block)
+        self.assertEqual(dashboard.experiment_block(None), "")
