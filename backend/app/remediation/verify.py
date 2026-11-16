@@ -3,9 +3,12 @@
 Once an incident's predicted failure time has passed (plus WINDOW_AFTER_S for forecast error
 and for the collector to record the crash), it gets one outcome:
 
-  acted on (a SUCCESS execution):  AVOIDED      no crash in the deployment between the action and
-                                                the end of the window, and it is still running
-                                   NOT_AVOIDED  a crash anyway
+  acted on (a SUCCESS execution):  AVOIDED      the predicted container life did not crash after the
+                                                action, and the workload is still running
+                                   NOT_AVOIDED  the predicted container life crashed anyway
+                                   (A crash of a *new* container life, e.g. a leak starting again after
+                                   a restart, is a separate event with its own incident; it is recorded
+                                   as next_crash_after_predicted_min, not counted against the action.)
   not acted on:                    CONFIRMED    the crash happened (prediction error recorded)
                                    NOT_CONFIRMED no crash
   marked executed, no record:      UNVERIFIABLE (e.g. an action taken before executions were recorded)
@@ -39,7 +42,7 @@ def _utc(t: Optional[datetime]) -> Optional[datetime]:
 
 
 def first_crash(db, namespace: str, deployment: str, start: datetime, end: datetime,
-                pod: Optional[str] = None) -> Optional[tuple[datetime, str]]:
+                pod: Optional[str] = None, exclude_pod: Optional[str] = None) -> Optional[tuple[datetime, str]]:
     """Earliest crash of the deployment (or one pod) in [start, end]: (time, how it was detected)."""
     q = db.query(ContainerTermination.finished_at).filter(
         ContainerTermination.namespace == namespace, ContainerTermination.deployment == deployment,
@@ -47,6 +50,8 @@ def first_crash(db, namespace: str, deployment: str, start: datetime, end: datet
         ContainerTermination.finished_at > start, ContainerTermination.finished_at <= end)
     if pod:
         q = q.filter(ContainerTermination.pod == pod)
+    if exclude_pod:
+        q = q.filter(ContainerTermination.pod != exclude_pod)
     recorded = q.order_by(ContainerTermination.finished_at).first()
     found = [(recorded[0], "OOMKilled")] if recorded else []
     s = db.query(MemorySample.pod, MemorySample.metric_timestamp, MemorySample.memory_bytes).filter(
@@ -54,6 +59,8 @@ def first_crash(db, namespace: str, deployment: str, start: datetime, end: datet
         MemorySample.metric_timestamp > start, MemorySample.metric_timestamp <= end)
     if pod:
         s = s.filter(MemorySample.pod == pod)
+    if exclude_pod:
+        s = s.filter(MemorySample.pod != exclude_pod)
     last: dict[str, int] = {}
     for p, t, b in s.order_by(MemorySample.pod, MemorySample.metric_timestamp).all():
         if p in last and last[p] - b > DROP_SPLIT_BYTES:
@@ -80,9 +87,15 @@ def decide(db, inc: Incident) -> tuple[str, str, dict]:
         acted_at = _utc(ex.executed_at)
         details.update(execution_id=ex.id, acted_at=acted_at.isoformat(),
                        minutes_ahead=round((predicted - acted_at).total_seconds() / 60, 1))
-        crash = first_crash(db, inc.namespace, inc.deployment, acted_at, end)
+        # the predicted container life: did it crash after the action?
+        crash = first_crash(db, inc.namespace, inc.deployment, acted_at, end, pod=inc.pod_name)
         alive = still_running(db, inc.namespace, inc.deployment, predicted, end)
         details["still_running_after_predicted_time"] = alive
+        # a new container life crashing later is a separate event: record it, do not count it
+        nxt = first_crash(db, inc.namespace, inc.deployment, acted_at, end, exclude_pod=inc.pod_name)
+        if nxt:
+            details.update(next_crash_at=nxt[0].isoformat(),
+                           next_crash_after_predicted_min=round((nxt[0] - predicted).total_seconds() / 60, 1))
         if crash:
             details.update(crash_at=crash[0].isoformat(), detected_by=crash[1])
             return "NOT_AVOIDED", "FAILED", details
@@ -150,7 +163,7 @@ def report(session_factory: Callable = SessionLocal) -> str:
     finally:
         db.close()
     counts: dict[str, int] = {}
-    errors, ahead = [], []
+    errors, ahead, nxt = [], [], []
     for _, outcome, detail in rows:
         counts[outcome] = counts.get(outcome, 0) + 1
         d = json.loads(detail or "{}")
@@ -158,12 +171,18 @@ def report(session_factory: Callable = SessionLocal) -> str:
             errors.append(abs(d["prediction_error_s"]))
         if outcome in ("AVOIDED", "NOT_AVOIDED") and "minutes_ahead" in d:
             ahead.append(d["minutes_ahead"])
+        if outcome == "AVOIDED" and "next_crash_after_predicted_min" in d:
+            nxt.append(d["next_crash_after_predicted_min"])
     lines = ["Outcome         Incidents"] + [f"{k:<15} {v}" for k, v in sorted(counts.items())]
     if errors:
         lines.append(f"Not acted on, crash came true: median error {statistics.median(errors):.0f} s "
                      f"(max {max(errors)} s) over {len(errors)} incidents")
     if ahead:
         lines.append(f"Acted on: action taken a median {statistics.median(ahead):.1f} min before the predicted crash")
+    if nxt:
+        lines.append(f"Avoided, but the workload crashed again within the window in {len(nxt)} case(s), a median "
+                     f"{statistics.median(nxt):+.1f} min after the predicted time (new container life: a restart "
+                     "delays a leak, it does not fix it)")
     return "\n".join(lines)
 
 

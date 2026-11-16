@@ -134,7 +134,7 @@ def summary(log: Path, session_factory: Callable = SessionLocal) -> str:
     for group in ("treated", "control"):
         es = [e for e in entries if e["group"] == group]
         tally: dict[str, int] = {}
-        ahead = []
+        ahead, nxt = [], []
         for e in es:
             o, d = outcome.get(e["incident_id"], (None, None))
             o = o or "awaiting verification"
@@ -142,9 +142,14 @@ def summary(log: Path, session_factory: Callable = SessionLocal) -> str:
             d = json.loads(d or "{}")
             if group == "treated" and "minutes_ahead" in d:
                 ahead.append(d["minutes_ahead"])
+            if group == "treated" and "next_crash_after_predicted_min" in d:
+                nxt.append(d["next_crash_after_predicted_min"])
         lines.append(f"{group:8} {len(es):3} incidents: " + ", ".join(f"{k} {v}" for k, v in sorted(tally.items())))
         if ahead:
             lines.append(f"         actions ran a median {statistics.median(ahead):.1f} min before the predicted crash")
+        if nxt:
+            lines.append(f"         the new container life crashed again in {len(nxt)} case(s), a median "
+                         f"{statistics.median(nxt):+.1f} min after the predicted time (a restart delays a leak)")
     return "\n".join(lines)
 
 
