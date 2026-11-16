@@ -59,8 +59,8 @@ class TestVerify(unittest.TestCase):
                            metric_timestamp=start + timedelta(seconds=15 * i), window_seconds=15,
                            memory_bytes=int(mib(i) * MiB), memory_limit_bytes=256 * MiB) for i in range(n)])
 
-    def _oom(self, at, pod=POD, dep=DEP):
-        self._add(self.T(namespace=NS, pod=pod, container="memload", deployment=dep, reason="OOMKilled",
+    def _oom(self, at, pod=POD, dep=DEP, reason="OOMKilled"):
+        self._add(self.T(namespace=NS, pod=pod, container="memload", deployment=dep, reason=reason,
                          exit_code=137, finished_at=at))
 
     def _get(self, iid="pytest-v-1"):
@@ -141,6 +141,26 @@ class TestVerify(unittest.TestCase):
         verify_due(now=LATER)
         inc, d, _ = self._get()
         self.assertEqual((inc.outcome, inc.status), ("UNVERIFIABLE", "EXPIRED"))
+
+    def test_life_ended_for_another_reason_is_unverifiable(self):
+        """Seen on 15 Nov: a runtime restart (reason Unknown) cut the predicted life short."""
+        self._incident()
+        early = P - timedelta(minutes=10)
+        self._oom(early, reason="Unknown")
+        self._readings(POD, P - timedelta(minutes=12), LATER,                     # memory falls as it restarts
+                       mib=lambda i: 116 if i < 8 else 6 + 2 * (i - 8))
+        verify_due(now=LATER)
+        inc, d, _ = self._get()
+        self.assertEqual((inc.outcome, d["ended_by"]), ("UNVERIFIABLE", "Unknown"))
+        self.assertIn("another reason", d["note"])
+
+    def test_unexplained_drop_still_counts_as_a_crash(self):
+        self._incident()
+        self._readings(POD, P - timedelta(minutes=3), LATER, mib=lambda i: 250 if i < 12 else 5 + i)
+        verify_due(now=LATER)
+        inc, d, _ = self._get()
+        self.assertEqual(inc.outcome, "CONFIRMED")
+        self.assertIn("memory drop", d["detected_by"])
 
     def test_executed_without_a_record_is_unverifiable(self):
         self._incident(status="EXECUTING")

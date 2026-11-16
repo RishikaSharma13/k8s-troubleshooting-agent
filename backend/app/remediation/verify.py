@@ -14,6 +14,8 @@ and for the collector to record the crash), it gets one outcome:
   marked executed, no record:      UNVERIFIABLE (e.g. an action taken before executions were recorded)
   no readings around the predicted
   time and no crash:               UNVERIFIABLE (the collector was not running: no claim either way)
+  the predicted life ended for
+  another reason first:            UNVERIFIABLE (e.g. a runtime restart, termination reason Unknown)
 
 Checks are per deployment, not per pod name (a restart creates pods with new names), and use only
 recorded data (terminations, memory readings, executions), so the answer is the same whenever it
@@ -41,19 +43,27 @@ def _utc(t: Optional[datetime]) -> Optional[datetime]:
     return None if t is None else (t if t.tzinfo else t.replace(tzinfo=timezone.utc))
 
 
-def first_crash(db, namespace: str, deployment: str, start: datetime, end: datetime,
-                pod: Optional[str] = None, exclude_pod: Optional[str] = None) -> Optional[tuple[datetime, str]]:
-    """Earliest crash of the deployment (or one pod) in [start, end]: (time, how it was detected)."""
-    q = db.query(ContainerTermination.finished_at).filter(
+EXPLAIN_WINDOW_S = 180     # a recorded termination this soon before a memory drop explains the drop
+
+
+def life_events(db, namespace: str, deployment: str, start: datetime, end: datetime,
+                pod: Optional[str] = None, exclude_pod: Optional[str] = None) -> list[tuple[datetime, str, bool]]:
+    """Every way a container life ended in [start, end], earliest first: (time, how, is_memory_crash).
+
+    Recorded terminations of any reason are included; only OOMKilled is a memory crash. A memory drop
+    of more than DROP_SPLIT_BYTES is a memory crash only when no termination was recorded for that pod
+    in the EXPLAIN_WINDOW_S before it (Kubernetes occasionally keeps no record). A drop that a recorded
+    non-memory termination explains (e.g. reason Unknown after a runtime restart) is not a memory crash.
+    """
+    q = db.query(ContainerTermination.pod, ContainerTermination.finished_at, ContainerTermination.reason).filter(
         ContainerTermination.namespace == namespace, ContainerTermination.deployment == deployment,
-        ContainerTermination.reason == "OOMKilled",
         ContainerTermination.finished_at > start, ContainerTermination.finished_at <= end)
     if pod:
         q = q.filter(ContainerTermination.pod == pod)
     if exclude_pod:
         q = q.filter(ContainerTermination.pod != exclude_pod)
-    recorded = q.order_by(ContainerTermination.finished_at).first()
-    found = [(recorded[0], "OOMKilled")] if recorded else []
+    recorded = q.all()
+    events = [(t, r or "unknown", r == "OOMKilled") for _, t, r in recorded]
     s = db.query(MemorySample.pod, MemorySample.metric_timestamp, MemorySample.memory_bytes).filter(
         MemorySample.namespace == namespace, MemorySample.deployment == deployment,
         MemorySample.metric_timestamp > start, MemorySample.metric_timestamp <= end)
@@ -64,10 +74,20 @@ def first_crash(db, namespace: str, deployment: str, start: datetime, end: datet
     last: dict[str, int] = {}
     for p, t, b in s.order_by(MemorySample.pod, MemorySample.metric_timestamp).all():
         if p in last and last[p] - b > DROP_SPLIT_BYTES:
-            found.append((t, "memory drop (restart without a termination record)"))
-            break
+            explained = any(rp == p and t - timedelta(seconds=EXPLAIN_WINDOW_S) <= rt <= t for rp, rt, _ in recorded)
+            if not explained:
+                events.append((t, "memory drop (restart without a termination record)", True))
         last[p] = b
-    return min(found) if found else None
+    return sorted(events)
+
+
+def first_crash(db, namespace: str, deployment: str, start: datetime, end: datetime,
+                pod: Optional[str] = None, exclude_pod: Optional[str] = None) -> Optional[tuple[datetime, str]]:
+    """Earliest memory crash of the deployment (or one pod) in [start, end]: (time, how it was detected)."""
+    for t, how, is_crash in life_events(db, namespace, deployment, start, end, pod, exclude_pod):
+        if is_crash:
+            return t, how
+    return None
 
 
 def still_running(db, namespace: str, deployment: str, start: datetime, end: datetime) -> bool:
@@ -107,8 +127,14 @@ def decide(db, inc: Incident) -> tuple[str, str, dict]:
         details["note"] = "marked as executed, but no execution was recorded"
         return "UNVERIFIABLE", inc.status, details
     created = _utc(inc.created_at)
-    crash = first_crash(db, inc.namespace, inc.deployment, created, end, pod=inc.pod_name)
     new_status = "EXPIRED" if inc.status in ("PENDING", "APPROVED") else inc.status
+    events = life_events(db, inc.namespace, inc.deployment, created, end, pod=inc.pod_name)
+    if events and not events[0][2]:
+        t, how, _ = events[0]
+        details.update(ended_at=t.isoformat(), ended_by=how,
+                       note=f"the predicted container life ended for another reason ({how}) before any memory crash")
+        return "UNVERIFIABLE", new_status, details
+    crash = (events[0][0], events[0][1]) if events else None
     if crash:
         details.update(crash_at=crash[0].isoformat(), detected_by=crash[1],
                        prediction_error_s=round((crash[0] - predicted).total_seconds()),
