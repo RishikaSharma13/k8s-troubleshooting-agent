@@ -83,19 +83,29 @@ class TestVerify(unittest.TestCase):
         self.assertIsNotNone(ex.verified_at)
         self.assertEqual(json.loads(ex.evidence)["verification"]["outcome"], "AVOIDED")
 
-    def test_not_avoided_when_it_crashed_anyway(self):
+    def test_not_avoided_when_the_predicted_life_crashed_anyway(self):
         acted = P - timedelta(minutes=15)
         self._incident(status="EXECUTING", executed_at=acted)
         self._readings("leak-v-new", acted, LATER)
-        self._oom(P - timedelta(minutes=2), pod="leak-v-new")                    # any pod of the deployment counts
+        self._oom(P - timedelta(minutes=2))                                      # the predicted pod itself
         verify_due(now=LATER)
         inc, d, _ = self._get()
         self.assertEqual((inc.outcome, inc.status, d["detected_by"]), ("NOT_AVOIDED", "FAILED", "OOMKilled"))
 
+    def test_new_life_crashing_later_is_recorded_not_counted(self):
+        acted = P - timedelta(minutes=18)
+        self._incident(status="EXECUTING", executed_at=acted)
+        self._readings("leak-v-new", acted + timedelta(seconds=20), LATER)
+        self._oom(P + timedelta(minutes=3), pod="leak-v-new")                    # the leak, starting again
+        verify_due(now=LATER)
+        inc, d, _ = self._get()
+        self.assertEqual((inc.outcome, d["next_crash_after_predicted_min"]), ("AVOIDED", 3.0))
+        self.assertIn("crashed again", report())
+
     def test_unrecorded_restart_counts_as_a_crash(self):
         acted = P - timedelta(minutes=15)
         self._incident(status="EXECUTING", executed_at=acted)
-        self._readings("leak-v-new", acted, LATER, mib=lambda i: 250 if i == 30 else (5 if i == 31 else 100))
+        self._readings(POD, acted, LATER, mib=lambda i: 250 if i == 30 else (5 if i == 31 else 100))
         verify_due(now=LATER)
         inc, d, _ = self._get()
         self.assertEqual(inc.outcome, "NOT_AVOIDED")
