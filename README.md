@@ -220,6 +220,11 @@ curl -X POST "localhost:8000/api/v1/remediation/execute?incident_id=$INC&action=
 
 # Verdicts so far
 PYTHONPATH=backend python -m app.remediation.verify --report
+
+# Controlled experiment: act on every other predicted incident, leave the others as a control group.
+# A bounded batch approval you start explicitly; actions go through the same API and safety checks.
+PYTHONPATH=backend python -m app.remediation.experiment run --confirm --count 10 --namespace remediate-lab --log experiment.jsonl
+PYTHONPATH=backend python -m app.remediation.experiment summary --log experiment.jsonl
 ```
 
 ### Tests
@@ -242,6 +247,7 @@ backend/app/predictor/     memory_forecast.py                        - time-to-l
                            evaluate.py, evaluate_signals.py          - backtests
                            dashboard.py                              - read-only HTML dashboard
 backend/app/remediation/   watch.py, actions.py, verify.py           - incidents, safe execution, verification
+                           experiment.py                             - treated vs control experiment
 backend/app/api/           predictor_routes.py                       - incidents, approval, remediation API
 backend/app/models/        database.py                               - tables
 backend/tests/             automated tests (conftest.py guards the real database)
