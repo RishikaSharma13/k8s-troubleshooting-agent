@@ -297,7 +297,99 @@ def jobs_section(n_jobs=8):
     return "\n".join(reversed(table)), png(fig)
 
 
-def remediation_section(limit: int = 12) -> str:
+def what(text: str) -> str:
+    """The plain-language line under each section heading."""
+    return f'<p class="what">What this shows: {text}</p>'
+
+
+def _range(values):
+    vals = sorted(v for v in values if v is not None)
+    if not vals:
+        return None
+    return f"{vals[0]:g}" if vals[0] == vals[-1] else f"{vals[0]:g}–{vals[-1]:g}"
+
+
+def _num(cell):
+    try:
+        return float(str(cell).rstrip("%"))
+    except (TypeError, ValueError):
+        return None
+
+
+def summary_tiles(rows, experiment_log=None) -> str:
+    """The strip at the top: the headline results, every number computed from the data."""
+    from app.models.database import Execution, Incident, SessionLocal
+    tiles = []
+    leaks = ("leak-steady", "leak-slow")
+    lead = _range(_num(rows.get((d, "linear"), {}).get("Lead time median (min)")) for d in leaks)
+    lead80 = _range(_num(rows.get((d, "threshold80"), {}).get("Lead time median (min)")) for d in leaks)
+    n_oom = sum(int(_num(rows.get((d, "linear"), {}).get("OOM lives")) or 0) for d in leaks)
+    if lead:
+        tiles.append((f"{lead} min", "warning before a memory crash",
+                      f"a normal 80% alert: {lead80} min ({n_oom} crashes)" if lead80 else f"{n_oom} crashes"))
+    fa, fa80 = (rows.get(("flat-hot", m), {}).get("False-alarm rate") for m in ("linear", "threshold80"))
+    if fa:
+        tiles.append((fa, "false alarms on a busy, healthy workload", f"a normal 80% alert: {fa80}" if fa80 else ""))
+    db = SessionLocal()
+    try:
+        inc = db.query(Incident.outcome, Incident.outcome_detail).filter(Incident.source == "forecast",
+                                                                          Incident.outcome.isnot(None)).all()
+        ex = db.query(Execution.status).all()
+    finally:
+        db.close()
+    errs = [abs(json.loads(d or "{}").get("prediction_error_s")) for o, d in inc
+            if o == "CONFIRMED" and "prediction_error_s" in json.loads(d or "{}")]
+    not_conf = sum(1 for o, _ in inc if o == "NOT_CONFIRMED")
+    if errs:
+        tiles.append((f"{len(errs)}", "live predictions came true",
+                      f"median error {statistics.median(errs):.0f} s · {not_conf} did not"))
+    groups = None
+    if experiment_log:
+        from pathlib import Path
+        from app.remediation.experiment import group_outcomes
+        if Path(experiment_log).exists():
+            groups = group_outcomes(Path(experiment_log))
+    if groups and groups["treated"]["n"]:
+        t, c = groups["treated"], groups["control"]
+        tiles.append((f"{t['tally'].get('AVOIDED', 0)} of {t['n']}", "crashes prevented when acted on",
+                      f"left alone: {c['tally'].get('CONFIRMED', 0)} of {c['n']} crashed as predicted"))
+    else:
+        avoided = sum(1 for o, _ in inc if o == "AVOIDED")
+        if avoided:
+            tiles.append((f"{avoided}", "crashes prevented by approved actions", "verified from recorded data"))
+    if ex:
+        ok = sum(1 for (st_,) in ex if st_ == "SUCCESS"); refused = sum(1 for (st_,) in ex if st_ == "REFUSED")
+        tiles.append(("100%", "of actions approved, dry-run first, recorded",
+                      f"{ok} executed · {refused} refused safely"))
+    if not tiles:
+        return ""
+    return '<div class="tiles">' + "".join(
+        f'<div class="tile"><div class="big">{html.escape(a)}</div><div class="lbl">{html.escape(b)}</div>'
+        f'<div class="cmp">{html.escape(c)}</div></div>' for a, b, c in tiles) + "</div>"
+
+
+def experiment_block(experiment_log) -> str:
+    """Treated vs control table for section 7 (empty without a log)."""
+    from pathlib import Path
+    if not experiment_log or not Path(experiment_log).exists():
+        return ""
+    from app.remediation.experiment import group_outcomes
+    g = group_outcomes(Path(experiment_log))
+    if not g["treated"]["n"]:
+        return ""
+    row = lambda name, label: (f"<tr><td>{label}</td><td>{g[name]['n']}</td><td>" +
+                               ", ".join(f"{k} {v}" for k, v in sorted(g[name]["tally"].items())) + "</td></tr>")
+    extra = ""
+    if g["treated"]["next_crash"]:
+        extra = (f"<p>Side-finding: in {len(g['treated']['next_crash'])} cases the restarted container crashed again a median "
+                 f"{statistics.median(g['treated']['next_crash']):+.1f} min after the predicted time: a restart prevents "
+                 "the uncontrolled crash, but it does not fix a leak.</p>")
+    return ("<h3>Controlled experiment: did the action make the difference?</h3>"
+            "<table><tr><th>group</th><th>incidents</th><th>verdicts</th></tr>"
+            + row("treated", "acted on (planned restart)") + row("control", "left alone") + "</table>" + extra)
+
+
+def remediation_section(limit: int = 12, experiment_log=None) -> str:
     """Section 7: forecast incidents, their verdicts, and the executions with their evidence."""
     from app.models.database import Execution, Incident, SessionLocal
     db = SessionLocal()
@@ -362,7 +454,9 @@ def remediation_section(limit: int = 12) -> str:
             f"<span class='muted'>dry run: {html.escape((ev.get('dry_run') or '-')[:80])}"
             f"{' &nbsp;|&nbsp; error: ' + html.escape(e.error_message[:80]) if e.error_message else ''}</span></td></tr>")
     return ('<div class="card"><h2>7. Closing the loop: predicted, approved, executed, verified</h2>'
-            f"<p>{summary}</p>" + "".join(f"<p>{f}</p>" for f in facts) + chart +
+            + what("from prediction to safe action: incidents are raised automatically, a person approves one exact "
+                   "action, and the system checks for itself whether the crash was prevented.") +
+            f"<p>{summary}</p>" + "".join(f"<p>{f}</p>" for f in facts) + experiment_block(experiment_log) + chart +
             "<h3>Recent incidents</h3><table><tr><th>workload</th><th>predicted crash (IST)</th><th>status</th>"
             "<th>verdict</th><th>detail</th></tr>" + "".join(rows) + "</table>"
             "<h3>Recent executions (every attempt is recorded)</h3><table><tr><th>time (IST)</th><th>action</th>"
@@ -392,10 +486,14 @@ def new_prediction_sections(storage_table, storage_chart, jobs_table, jobs_chart
     else:
         jobs = "<p>No job readings yet.</p>"
     out = ('<div class="card"><h2>4. Storage: when will a pod be evicted for using too much local disk?</h2>'
-           + storage + "</div>\n"
-           '<div class="card"><h2>5. Jobs: will this job finish before its deadline?</h2>' + jobs + "</div>\n")
+           + what("the same idea for disk: when a pod will be evicted for filling its local storage, next to what a "
+                  "normal 80% alert would say.") + storage + "</div>\n"
+           '<div class="card"><h2>5. Jobs: will this job finish before its deadline?</h2>'
+           + what("batch jobs: whether each job will finish before its deadline, decided from its first few items, long "
+                  "before a timeout alert could say anything.") + jobs + "</div>\n")
     if sig_summary:
-        out += ('<div class="card"><h2>6. Evaluation of the new predictions</h2>' + sig_summary +
+        out += ('<div class="card"><h2>6. Evaluation of the new predictions</h2>'
+                + what("the scores for the disk and job predictions, measured the same way as memory.") + sig_summary +
                 '<p class="note">Backtest from app.predictor.evaluate_signals; same rules as the memory evaluation.</p></div>\n')
     return out
 
@@ -447,6 +545,7 @@ def main():
     ap.add_argument("--report", required=True)
     ap.add_argument("--refresh-s", type=int, default=60)
     ap.add_argument("--signals-report", help="report.md from app.predictor.evaluate_signals (optional)")
+    ap.add_argument("--experiment-log", help="JSON-lines log of app.remediation.experiment (optional)")
     args = ap.parse_args()
     lives = load_lives(NS, datetime.now(timezone.utc) - timedelta(hours=26), None)
     rows = parse_report(args.report)
@@ -459,7 +558,8 @@ def main():
     jobs_table, jobs_chart = jobs_section()
     sig_summary = signals_summary(args.signals_report)
     extra_sections = new_prediction_sections(storage_table, storage_chart, jobs_table, jobs_chart, sig_summary)
-    extra_sections += remediation_section()
+    extra_sections += remediation_section(experiment_log=args.experiment_log)
+    tiles = summary_tiles(rows, args.experiment_log)
     gen = datetime.now(timezone.utc).astimezone(IST)
     table = "\n".join(
         f"<tr><td>{d}</td><td>{m}</td><td>{n}</td><td class='{'warn' if a == 'FIRING' else 'ok'}'>{a}</td>"
@@ -474,19 +574,32 @@ def main():
  .card {{ border: 1px solid #e3e3e3; border-radius: 8px; padding: 12px 16px; margin: 14px 0 }}
  img {{ max-width: 100% }} .note {{ background: #f6f6f6; padding: 8px 12px; border-radius: 6px }}
  .limits li {{ margin: 4px 0 }}
+ .what {{ color: #2d5d73; background: #eef6f8; border-left: 4px solid #3b8ea5; padding: 6px 10px; margin: 0 0 10px; font-size: 14px }}
+ .tiles {{ margin: 16px -12px 6px 0; font-size: 0 }}
+ .tile {{ display: inline-block; vertical-align: top; box-sizing: border-box; width: calc(20% - 12px); min-width: 180px; margin: 0 12px 12px 0; min-height: 118px;
+          border: 1px solid #d6e4ea; border-radius: 10px; padding: 12px 14px; background: #f7fbfc; font-size: 14px }}
+ .tile .big {{ font-size: 28px; font-weight: 700; color: #17365d }} .tile .lbl {{ font-size: 14px; font-weight: 600; margin-top: 2px }}
+ .tile .cmp {{ font-size: 12.5px; color: #666; margin-top: 4px }}
 </style></head><body>
 <h1>Predicting failures before they happen</h1>
-<div class="sub">namespace <code>predict-lab</code> - generated {gen:%d %b %Y %H:%M:%S} IST - refreshes every {args.refresh_s} s - read-only</div>
+<div class="sub">Kubernetes failure prediction · live and read-only · generated {gen:%d %b %Y %H:%M:%S} IST · refreshes every {args.refresh_s} s</div>
+{tiles}
 
 <div class="card"><h2>1. Live forecast: when will each container hit its memory limit?</h2>
+{what("each container's memory right now, what a normal 80% alert would be doing, and when the forecast expects it "
+      "to hit its limit. The chart shows the last 90 minutes; dotted lines are real crashes.")}
 <table><tr><th>workload</th><th>method</th><th>memory now</th><th>80% threshold alert</th><th>forecast</th></tr>
 {table}</table>
 <img src="data:image/png;base64,{recent}" alt="memory of the three workloads, last 90 minutes"></div>
 
 <div class="card"><h2>2. Does the forecast come true?</h2>
+{what("one real crash: the dashed line is what the forecast said 10 minutes earlier, using only data from before "
+      "that moment; the red line is what actually happened.")}
 {f'<img src="data:image/png;base64,{example}" alt="forecast vs actual for one OOMKill"><p class="note">{note}</p>' if example else '<p>No complete leak-steady life in the last 26 hours.</p>'}</div>
 
 <div class="card"><h2>3. Evaluation: forecasts vs threshold alerts ({facts["n_oom"]} real OOMKills)</h2>
+{what("across hundreds of real crashes: how much warning each method gave (left, higher is better) and how often "
+      "it raised a false alarm on a healthy workload (right, lower is better).")}
 <img src="data:image/png;base64,{evaluation}" alt="warning time and false alarms by method">
 <p>Backtest on {facts["window"]}: each decision used only data available at that moment.</p>
 <h3>Honest limitations</h3><ul class="limits">
