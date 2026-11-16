@@ -125,24 +125,37 @@ disturbs the evaluation workloads:
    run**; the rollout is awaited; before and after snapshots are kept. **Every attempt is recorded**, including
    refusals and failures. A memory increase is +50% of the limit actually read (capped at 1 GiB), refused rather than
    guessed.
-4. **Verify.** After the predicted crash time (+5 minutes) each incident gets a verdict, at deployment level and from
-   recorded data only: **AVOIDED / NOT_AVOIDED** if acted on, **CONFIRMED / NOT_CONFIRMED** if not, and
-   **UNVERIFIABLE** when there is no data (for example the collector was not running): no claim either way.
+4. **Verify.** After the predicted crash time (+5 minutes) each incident gets a verdict from recorded data only:
+   **AVOIDED / NOT_AVOIDED** if acted on (judged on the predicted container life; a later crash of a *new* life is
+   recorded separately), **CONFIRMED / NOT_CONFIRMED** if not, and **UNVERIFIABLE** when there is no data or the
+   predicted life ended for another reason first (e.g. a runtime restart): no claim either way.
 
-### Live results (12 Nov 2026)
+### Controlled experiment (16 Nov 2026)
 
-| Verdict | Incidents | What it shows |
+To show that the action, not luck, prevents the crash, alternate predicted incidents were acted on (planned restart)
+or deliberately left alone, ten of each, through the normal approval and safety path:
+
+| Group | Incidents | Verdict |
 |---|---|---|
-| CONFIRMED | **84** | Unacted predictions that came true: median error **16 s** (max 168 s), made a median **18.1 min** ahead |
-| NOT_CONFIRMED | **0** | No prediction with data failed to come true |
-| AVOIDED | **1** | An approved restart, run 15.3 min before the predicted crash: the crash did not happen |
-| UNVERIFIABLE | **7** | No data (laptop off), or one action taken before executions were recorded |
+| Treated (acted on) | 10 | **AVOIDED 10 of 10**: actions ran a median 17.8 min before the predicted crash |
+| Control (left alone) | 10 | **CONFIRMED 10 of 10**: each crashed as predicted |
 
-These are predictions made **in advance and automatically**, not a backtest. Honest notes: AVOIDED rests on a single
-example so far; and a restart avoids an uncontrolled crash but **does not fix a leak**, as the recommendation itself
-says. The first live restart was **refused** by the executor's own dry run (`kubectl rollout restart` has no
-`--dry-run`); it is now done as the equivalent dry-runnable `kubectl patch`, and a test checks every command against
-the real kubectl.
+If acting made no difference, a split this clean would happen by chance about 1 time in 92,000 (two-sided Fisher
+exact test). **A measured side-finding:** in 8 cases the restarted container crashed again a median **+3.2 min** after
+the original predicted time. A restart prevents the uncontrolled crash at that moment, but **it does not fix a leak**.
+
+### Live prediction accuracy
+
+Re-verified on 16 Nov 2026 under the final rules: **120** unacted predictions came true with a median error of
+**14 s** (max 168 s, coinciding with a 2 min 48 s collector pause), made about **18 min** ahead; **0** predictions with
+data failed to come true; 13 were UNVERIFIABLE (no data, or the life ended for another reason). These are predictions
+made **in advance and automatically**, not a backtest.
+
+Honest notes: one workload type, one action, a synthetic linear leak. The first live restart was **refused** by the
+executor's own dry run (`kubectl rollout restart` has no `--dry-run`); it is now the equivalent dry-runnable
+`kubectl patch`, and a test checks every command against the real kubectl. Verification was corrected twice after
+surprising numbers were investigated (a restarted container's later crash; a restart for an unrelated reason), and
+all verdicts were recomputed.
 
 ---
 
@@ -286,7 +299,7 @@ docs/results/              committed evaluation reports
 
 ## What's next
 
-- More approved actions, so that AVOIDED rests on more than one example; then low-risk automatic actions.
+- Test `INCREASE_MEMORY_LIMIT` live and on other failure patterns; then low-risk automatic actions.
 - Test on workloads with daily patterns and changing growth, where Prophet could matter.
 - Calibrate prediction intervals.
 - Count distinct incidents and alert volume, as a production system would need.
