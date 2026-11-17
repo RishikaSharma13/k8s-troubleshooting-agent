@@ -227,7 +227,9 @@ systemd-run --user --unit=k8s-api --working-directory="$PWD" --setenv=DATABASE_U
   --setenv=PYTHONPATH=backend --setenv=PATH="$PATH" \
   "$PWD/venv/bin/python" -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000
 
-# Approve and execute one incident (ID from the incidents table)
+# Approve with a button: open http://127.0.0.1:8000/ui (start the API with DASHBOARD_HTML=<generated dashboard>).
+# The buttons call the same two endpoints below; POSTs from other websites are refused.
+# Or approve and execute one incident by hand (ID from the incidents table)
 curl -X POST "localhost:8000/api/v1/actions/approve?incident_id=$INC&action=RESTART_DEPLOYMENT"
 curl -X POST "localhost:8000/api/v1/remediation/execute?incident_id=$INC&action=RESTART_DEPLOYMENT"
 
