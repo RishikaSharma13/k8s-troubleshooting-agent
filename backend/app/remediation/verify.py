@@ -12,8 +12,9 @@ and for the collector to record the crash), it gets one outcome:
   not acted on:                    CONFIRMED    the crash happened (prediction error recorded)
                                    NOT_CONFIRMED no crash
   marked executed, no record:      UNVERIFIABLE (e.g. an action taken before executions were recorded)
-  no readings around the predicted
-  time and no crash:               UNVERIFIABLE (the collector was not running: no claim either way)
+  no crash, but readings stopped or
+  paused before the window closed: UNVERIFIABLE (collector stopped or laptop asleep: no claim either way)
+  crashed after a pause:           CONFIRMED, but the error is kept out of the statistics (the pause shifted it)
   the predicted life ended for
   another reason first:            UNVERIFIABLE (e.g. a runtime restart, termination reason Unknown)
 
@@ -96,6 +97,28 @@ def still_running(db, namespace: str, deployment: str, start: datetime, end: dat
         MemorySample.metric_timestamp > start, MemorySample.metric_timestamp <= end).first() is not None
 
 
+PAUSE_S = 90              # a gap in readings longer than this means the collector or the laptop paused
+
+
+def reading_times(db, namespace: str, deployment: str, start: datetime, end: datetime, pod: Optional[str] = None) -> list:
+    q = db.query(MemorySample.metric_timestamp).filter(
+        MemorySample.namespace == namespace, MemorySample.deployment == deployment,
+        MemorySample.metric_timestamp > start, MemorySample.metric_timestamp <= end)
+    if pod:
+        q = q.filter(MemorySample.pod == pod)
+    return [t for (t,) in q.order_by(MemorySample.metric_timestamp).all()]
+
+
+def longest_gap_s(times: list) -> float:
+    return max(((b - a).total_seconds() for a, b in zip(times, times[1:])), default=0.0)
+
+
+def observed_through(times: list, start: datetime, end: datetime) -> bool:
+    """Readings cover [start, end] without a pause: needed before claiming that nothing happened."""
+    return bool(times) and (times[0] - start).total_seconds() <= PAUSE_S and \
+        (end - times[-1]).total_seconds() <= PAUSE_S and longest_gap_s(times) <= PAUSE_S
+
+
 def decide(db, inc: Incident) -> tuple[str, str, dict]:
     """(outcome, new status, details) for one due incident."""
     predicted = _utc(inc.predicted_failure_at)
@@ -136,12 +159,21 @@ def decide(db, inc: Incident) -> tuple[str, str, dict]:
         return "UNVERIFIABLE", new_status, details
     crash = (events[0][0], events[0][1]) if events else None
     if crash:
+        error = round((crash[0] - predicted).total_seconds())
         details.update(crash_at=crash[0].isoformat(), detected_by=crash[1],
-                       prediction_error_s=round((crash[0] - predicted).total_seconds()),
                        minutes_ahead=round((predicted - created).total_seconds() / 60, 1))
+        gap = longest_gap_s(reading_times(db, inc.namespace, inc.deployment, created, crash[0], pod=inc.pod_name))
+        if gap > PAUSE_S:
+            # it did crash, but a pause (laptop asleep, collector stopped) shifted the timing: keep it out of error stats
+            details.update(prediction_error_paused_s=error, timing_affected_by_pause_s=round(gap))
+        else:
+            details["prediction_error_s"] = error
         return "CONFIRMED", new_status, details
-    if not still_running(db, inc.namespace, inc.deployment, predicted - timedelta(minutes=2), end):
-        details["note"] = "no memory readings around the predicted time: the collector was not running"
+    window_start = predicted - timedelta(minutes=2)
+    if not observed_through(reading_times(db, inc.namespace, inc.deployment, window_start, end, pod=inc.pod_name),
+                            window_start, end):
+        details["note"] = ("readings stopped or paused before the window closed (collector not running or laptop "
+                           "asleep): no claim either way")
         return "UNVERIFIABLE", new_status, details
     return "NOT_CONFIRMED", new_status, details
 
@@ -199,10 +231,14 @@ def report(session_factory: Callable = SessionLocal) -> str:
             ahead.append(d["minutes_ahead"])
         if outcome == "AVOIDED" and "next_crash_after_predicted_min" in d:
             nxt.append(d["next_crash_after_predicted_min"])
+    paused = sum(1 for _, o, d in rows if o == "CONFIRMED" and "timing_affected_by_pause_s" in json.loads(d or "{}"))
     lines = ["Outcome         Incidents"] + [f"{k:<15} {v}" for k, v in sorted(counts.items())]
     if errors:
         lines.append(f"Not acted on, crash came true: median error {statistics.median(errors):.0f} s "
-                     f"(max {max(errors)} s) over {len(errors)} incidents")
+                     f"(max {max(errors)} s) over {len(errors)} incidents"
+                     + (f"; {paused} more came true after a pause, timing not counted" if paused else ""))
+    elif paused:
+        lines.append(f"Not acted on: {paused} more came true after a pause, timing not counted")
     if ahead:
         lines.append(f"Acted on: action taken a median {statistics.median(ahead):.1f} min before the predicted crash")
     if nxt:
