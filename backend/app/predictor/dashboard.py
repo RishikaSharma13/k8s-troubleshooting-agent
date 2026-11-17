@@ -438,6 +438,8 @@ def remediation_section(limit: int = 12, experiment_log=None) -> str:
         d = json.loads(i.outcome_detail or "{}")
         verdict = i.outcome or ("awaiting approval" if i.status == "PENDING" else "awaiting verification")
         extra = (f"error {d['prediction_error_s']:+d} s" if "prediction_error_s" in d else
+                 f"crashed; timing affected by a {d['timing_affected_by_pause_s'] // 60:.0f} min pause"
+                 if "timing_affected_by_pause_s" in d else
                  f"acted {d['minutes_ahead']} min ahead" if i.outcome in ("AVOIDED", "NOT_AVOIDED") and "minutes_ahead" in d
                  else html.escape(d.get("note", "")))
         rows.append(f"<tr><td>{i.deployment}</td><td>{ist(i.predicted_failure_at):%m-%d %H:%M:%S}</td><td>{i.status}</td>"

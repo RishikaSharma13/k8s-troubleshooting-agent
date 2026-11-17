@@ -162,6 +162,27 @@ class TestVerify(unittest.TestCase):
         self.assertEqual(inc.outcome, "CONFIRMED")
         self.assertIn("memory drop", d["detected_by"])
 
+    def test_readings_stopping_before_the_window_closes_is_not_a_verdict(self):
+        """Seen on 16 Nov: the laptop suspended 49 s before the predicted crash."""
+        self._incident()
+        self._readings(POD, P - timedelta(minutes=10), P - timedelta(seconds=49))
+        verify_due(now=LATER)
+        inc, d, _ = self._get()
+        self.assertEqual(inc.outcome, "UNVERIFIABLE")                    # not NOT_CONFIRMED
+        self.assertIn("stopped or paused", d["note"])
+
+    def test_crash_after_a_pause_is_confirmed_but_kept_out_of_the_error(self):
+        self._incident()
+        self._readings(POD, P - timedelta(minutes=15), P - timedelta(minutes=10))
+        self._readings(POD, P - timedelta(minutes=6), P + timedelta(seconds=40))   # a 4-minute pause in between
+        self._oom(P + timedelta(seconds=45))
+        verify_due(now=LATER)
+        inc, d, _ = self._get()
+        self.assertEqual(inc.outcome, "CONFIRMED")
+        self.assertNotIn("prediction_error_s", d)                         # so no statistic counts it
+        self.assertEqual((d["prediction_error_paused_s"], d["timing_affected_by_pause_s"] >= 240), (45, True))
+        self.assertIn("1 more came true after a pause", report())
+
     def test_executed_without_a_record_is_unverifiable(self):
         self._incident(status="EXECUTING")
         verify_due(now=LATER)
