@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api import predictor_routes
+from app.api import predictor_routes, ui_routes
 import logging
 
 logging.basicConfig(level=logging.INFO)
@@ -21,6 +21,7 @@ app.add_middleware(
 
 # Include router WITHOUT adding prefix (router already has /api/v1)
 app.include_router(predictor_routes.router)
+app.include_router(ui_routes.router)
 
 @app.get("/health")
 def health():

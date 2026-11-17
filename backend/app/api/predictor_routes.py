@@ -3,8 +3,7 @@ from typing import Optional
 
 from app.models.database import Incident, SessionLocal
 from app.remediation.verify import verify_due
-from fastapi import APIRouter, Query
-from app.predictor.auto_remediation_policy import AutoRemediationPolicy, RiskLevel
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from loguru import logger
 
 from app.predictor.metrics_collector import MetricsCollector
@@ -14,7 +13,21 @@ from app.predictor.forecaster import Forecaster
 from app.kubernetes.kubectl_executor import KubectlExecutor
 
 
-router = APIRouter(prefix="/api/v1", tags=["predictor"])
+def same_origin_only(request: Request) -> None:
+    """Refuse POSTs that a browser sends from another site (cross-site request forgery).
+
+    The API listens on 127.0.0.1 only, but a page in the user's own browser could still send a POST
+    to it. Browsers label such requests with an Origin header; requests without one (curl, the
+    experiment runner) and requests from pages this API serves itself (/ui) are allowed.
+    """
+    if request.method != "POST":
+        return
+    origin = request.headers.get("origin")
+    if origin and origin.rstrip("/") != f"{request.url.scheme}://{request.headers.get('host', '')}":
+        raise HTTPException(status_code=403, detail="Cross-site request refused")
+
+
+router = APIRouter(prefix="/api/v1", tags=["predictor"], dependencies=[Depends(same_origin_only)])
 
 
 # Global predictor/remediation instances
@@ -461,76 +474,6 @@ async def escalation_risk_forecast(
         logger.error(f"Escalation risk calculation failed: {e}")
         return {"status": "error", "message": str(e)}
 
-
-@router.post("/actions/auto-remediate")
-async def auto_remediate_action(
-    pod_name: str = Query(...),
-    namespace: str = Query("default"),
-) -> dict:
-    """
-    Auto-remediate based on escalation risk.
-    
-    If escalation risk < 40% (LOW), automatically restart the pod.
-    Otherwise, return what manual action is needed.
-    """
-    try:
-        
-        forecaster = collector.forecaster
-        policy = AutoRemediationPolicy()
-        
-        # Get escalation risk for this pod
-        metrics = collector.risk_manager.get_pod_metrics_history(
-            pod_name, namespace, limit=100
-        )
-        
-        if not metrics:
-            return {
-                "status": "error",
-                "message": f"No metrics found for {pod_name}",
-                "auto_executed": False,
-            }
-        
-        # Calculate escalation risk
-        escalation_risk = forecaster.escalation_risk(
-            pod_name, metrics, critical_threshold=80
-        )
-        
-        if not escalation_risk:
-            return {
-                "status": "warning",
-                "message": "Unable to calculate escalation risk",
-                "auto_executed": False,
-            }
-        
-        risk_prob = escalation_risk.get("escalation_probability", 0)
-        risk_level = policy.classify_risk(risk_prob)
-        action_plan = policy.get_remediation_action(pod_name, risk_level)
-        
-        # Check if auto-execute is allowed
-        should_auto = policy.should_auto_remediate(risk_prob)
-        
-        response = {
-            "status": "success",
-            "pod_name": pod_name,
-            "namespace": namespace,
-            "escalation_probability": risk_prob,
-            "risk_level": risk_level.value,
-            "recommended_action": action_plan["action"],
-            "auto_executed": False,
-            "reason": action_plan["reason"],
-        }
-        
-        # If LOW risk, execute remediation
-        if should_auto:
-            response["auto_executed"] = True
-            response["message"] = f"✅ Auto-remediation approved: {action_plan['action']} pod {pod_name}"
-            logger.info(f"Auto-remediation APPROVED for {pod_name}: {action_plan['action']}")
-        
-        return response
-        
-    except Exception as e:
-        logger.error(f"Auto-remediation decision failed: {e}")
-        return {"status": "error", "message": str(e), "auto_executed": False}
 
 @router.get("/metrics/history")
 async def get_metrics_history(
