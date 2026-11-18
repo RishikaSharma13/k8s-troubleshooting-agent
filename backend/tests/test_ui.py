@@ -51,23 +51,49 @@ class TestUI(unittest.TestCase):
         db = self.Session()
         try:
             db.query(self.I).filter(self.I.id.like("pytest-ui-%")).delete(synchronize_session=False)
+            from app.models.database import MemorySample
+            db.query(MemorySample).filter(MemorySample.namespace == "remediate-lab",
+                                          MemorySample.pod.in_(["p", "pod-gone", "pod-live"])).delete(synchronize_session=False)
             db.commit()
         finally:
             db.close()
 
-    def _incident(self, iid, minutes, source="forecast", status="PENDING", reasoning="Forecast (linear): +12.0 MiB/min"):
+    def _incident(self, iid, minutes, source="forecast", status="PENDING", reasoning="Forecast (linear): +12.0 MiB/min",
+                  pod="p"):
         now = datetime.now(timezone.utc)
         db = self.Session()
         try:
-            db.add(self.I(id=iid, pod_name="p", deployment="leak-remediate", namespace="remediate-lab", risk_score=50,
+            db.add(self.I(id=iid, pod_name=pod, deployment="leak-remediate", namespace="remediate-lab", risk_score=50,
                           risk_level="MEDIUM", status=status, recommended_action="RESTART_DEPLOYMENT", source=source,
                           predicted_failure_at=now + timedelta(minutes=minutes), life_started_at=now, reasoning=reasoning))
             db.commit()
         finally:
             db.close()
 
+    def _reading(self, pod, seconds_ago):
+        from app.models.database import MemorySample
+        db = self.Session()
+        try:
+            db.add(MemorySample(namespace="remediate-lab", pod=pod, container="memload", deployment="leak-remediate",
+                                metric_timestamp=datetime.now(timezone.utc) - timedelta(seconds=seconds_ago),
+                                window_seconds=15, memory_bytes=30 * 1048576, memory_limit_bytes=256 * 1048576))
+            db.commit()
+        finally:
+            db.close()
+
+    def test_stale_and_superseded_incidents_are_not_offered(self):
+        """Seen on 18 Nov: after a reset, the replaced pod's incident was still listed beside the new one."""
+        self._incident("pytest-ui-stale", 12, pod="pod-gone")
+        self._reading("pod-gone", 600)                             # last reported 10 minutes ago: replaced
+        self._incident("pytest-ui-live", 15, pod="pod-live")
+        self._reading("pod-live", 20)
+        page = client.get("/ui").text
+        self.assertIn("pytest-ui-live", page)
+        self.assertNotIn("pytest-ui-stale", page)
+
     def test_panel_lists_only_actionable_forecast_incidents(self):
         self._incident("pytest-ui-ok", 15, reasoning="<script>alert(1)</script> leak")
+        self._reading("p", 20)
         self._incident("pytest-ui-close", 1)                       # under 3 minutes: too late to act
         self._incident("pytest-ui-old", 15, source=None)          # not from a forecast
         self._incident("pytest-ui-done", 15, status="EXECUTING")

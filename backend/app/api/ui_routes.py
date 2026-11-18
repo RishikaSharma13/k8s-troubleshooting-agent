@@ -18,22 +18,37 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter
 from fastapi.responses import HTMLResponse
 
-from app.models.database import Incident, SessionLocal
+from app.models.database import Incident, MemorySample, SessionLocal
 
 router = APIRouter()
 IST = ZoneInfo("Asia/Kolkata")
 MIN_LEAD_S = 180          # do not offer an action when the predicted crash is under 3 minutes away
+LIVE_S = 180              # the predicted pod must have reported within this many seconds
 LABEL = {"RESTART_DEPLOYMENT": "planned restart", "INCREASE_MEMORY_LIMIT": "raise memory limit (+50%)"}
 OTHER = {"RESTART_DEPLOYMENT": "INCREASE_MEMORY_LIMIT", "INCREASE_MEMORY_LIMIT": "RESTART_DEPLOYMENT"}
 
 
 def pending_incidents(now: Optional[datetime] = None) -> list:
+    """Actionable incidents: pending, far enough ahead, the predicted pod still reporting, newest per workload."""
     now = now or datetime.now(timezone.utc)
     db = SessionLocal()
     try:
-        return (db.query(Incident).filter(Incident.source == "forecast", Incident.status == "PENDING",
+        rows = (db.query(Incident).filter(Incident.source == "forecast", Incident.status == "PENDING",
                                           Incident.predicted_failure_at > now + timedelta(seconds=MIN_LEAD_S))
-                .order_by(Incident.predicted_failure_at).all())
+                .order_by(Incident.created_at.desc()).all())
+        out, seen = [], set()
+        for inc in rows:
+            key = (inc.namespace, inc.deployment)
+            if key in seen:
+                continue                          # an older incident for the same workload is superseded
+            alive = db.query(MemorySample.id).filter(
+                MemorySample.namespace == inc.namespace, MemorySample.pod == inc.pod_name,
+                MemorySample.metric_timestamp > now - timedelta(seconds=LIVE_S)).first()
+            if alive is None:
+                continue                          # the predicted pod is gone (replaced): stale
+            seen.add(key)
+            out.append(inc)
+        return sorted(out, key=lambda i: i.predicted_failure_at)
     finally:
         db.close()
 
