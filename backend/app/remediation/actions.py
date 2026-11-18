@@ -6,7 +6,8 @@ and the action must equal the approved action). This module adds the cluster-sid
 1. Only RESTART_DEPLOYMENT and INCREASE_MEMORY_LIMIT can run.
 2. The namespace must carry the label reliability-agent/remediation=allowed, read live from
    the cluster (so predict-lab, the evaluation's ground truth, can never be changed).
-3. A "before" snapshot is taken: memory limits, pods, restart counts.
+3. A "before" snapshot is taken: memory limits, pods, restart counts. If the predicted pod no longer
+   exists (it was replaced, e.g. by an earlier action), the incident is stale and is refused.
 4. The exact command is built. INCREASE_MEMORY_LIMIT raises each container's limit by 50% of
    the limit actually read, capped at 1 GiB; if a limit cannot be read the action is refused
    (never guessed).
@@ -123,6 +124,10 @@ class SafeRemediationExecutor:
                 raise Refused(f"action {action_type} is not executable (allowed: {', '.join(ALLOWED_ACTIONS)})")
             self.check_namespace(ns)
             evidence["before"] = before = self.snapshot(ns, dep)
+            predicted_pod = getattr(incident.trend_data, "pod_name", None)
+            if predicted_pod and before["pods"] and predicted_pod not in {p["name"] for p in before["pods"]}:
+                raise Refused(f"incident is stale: the predicted pod {predicted_pod} no longer exists "
+                              "(it was replaced), so this prediction no longer applies")
             args, old_value, new_value = self.build_command(action_type, ns, dep, before)
             evidence["command"] = "kubectl " + " ".join(args)
 

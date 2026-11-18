@@ -248,3 +248,16 @@ class TestSummaryTiles(unittest.TestCase):
         self.assertIn("acted on (planned restart)", block)
         self.assertIn("AVOIDED 1", block)
         self.assertEqual(dashboard.experiment_block(None), "")
+
+
+def test_live_chart_is_not_stretched_right_after_a_restart():
+    """Seen on 18 Nov: with only minutes of data, labels at the window start stretched the image."""
+    import base64, struct
+    from types import SimpleNamespace
+    now = datetime.now(timezone.utc)
+    times = [now - timedelta(seconds=15 * i) for i in range(20, 0, -1)]          # 5 minutes of data
+    life = SimpleNamespace(deployment="leak-steady", times=times, values=[(10 + i) * 1048576 for i in range(20)],
+                           ends_in_oom=False, end_time=None)
+    png = base64.b64decode(dashboard.chart_recent([life]))
+    width = struct.unpack(">I", png[16:20])[0]                                   # PNG header: image width
+    assert width < 1400, width

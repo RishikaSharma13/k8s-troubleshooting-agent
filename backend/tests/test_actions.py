@@ -111,6 +111,15 @@ class TestSafeExecutor(unittest.TestCase):
         self.assertEqual((result["status"], row.status, k.writes()), ("REFUSED", "REFUSED", []))
         self.assertIn("not labelled", row.error_message)
 
+    def test_stale_incident_is_refused(self):
+        """Seen on 18 Nov: an incident whose pod had been replaced was still offered for approval."""
+        k = FakeKubectl()
+        inc = FakeIncident("pytest-inc-1")
+        inc.trend_data.pod_name = "leak-x-gone"                                  # not among the running pods
+        result = SafeRemediationExecutor(k, rollout_timeout_s=5).execute_action(inc, "RESTART_DEPLOYMENT")
+        self.assertEqual((result["status"], k.writes()), ("REFUSED", []))
+        self.assertIn("stale", result["error"])
+
     def test_unknown_action_refused_before_touching_the_cluster(self):
         k, result, row, ev = self._run("SCALE_DEPLOYMENT")
         self.assertEqual((row.status, k.calls), ("REFUSED", []))
