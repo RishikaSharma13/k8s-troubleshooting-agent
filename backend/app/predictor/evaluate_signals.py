@@ -24,7 +24,7 @@ import argparse
 import csv
 import statistics
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import replace, asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Optional, Sequence
@@ -172,6 +172,26 @@ def evaluate_job(life: JobLife, methods: Sequence[str], step_s: float = 20.0) ->
     return rows
 
 
+DEBOUNCE_N = 2   # decided in advance (26 Oct: "requiring two in a row is the next step"), not tuned on results
+
+
+def debounce(rows: Sequence[JobDecision], n: int = DEBOUNCE_N) -> list[JobDecision]:
+    """For each forecast method m, a variant 'm+<n>x' that alerts only after n consecutive 'late' decisions
+    in the same Job. It uses the same decisions, so it is scored on exactly the same Jobs and moments."""
+    by: dict = {}
+    for r in rows:
+        if r.method.startswith("threshold") or "+" in r.method:
+            continue
+        by.setdefault((r.method, r.job), []).append(r)
+    out = []
+    for (m, _), rs in by.items():
+        streak = 0
+        for r in sorted(rs, key=lambda r: r.origin):
+            streak = streak + 1 if r.alert else 0
+            out.append(replace(r, method=f"{m}+{n}x", alert=streak >= n))
+    return out
+
+
 def summarize_jobs(rows: Sequence[JobDecision]) -> dict:
     out = {}
     for m in sorted({r.method for r in rows}):
@@ -296,6 +316,8 @@ def main(argv=None) -> int:
     ap.add_argument("--since", help="ISO time (UTC): evaluate only lives/Jobs that started at or after this time")
     ap.add_argument("--what", choices=["storage", "jobs", "all"], default="all")
     ap.add_argument("--methods", default="prophet,linear")
+    ap.add_argument("--debounce", type=int, default=DEBOUNCE_N,
+                    help="also score each forecast method alerting only after N 'late' decisions in a row (0: off)")
     args = ap.parse_args(argv)
     until = datetime.fromisoformat(args.until).replace(tzinfo=timezone.utc) if args.until else None
     since = datetime.fromisoformat(args.since).replace(tzinfo=timezone.utc) if args.since else None
@@ -330,6 +352,8 @@ def main(argv=None) -> int:
         for life in lives:
             if life.case != "excluded":
                 rows += evaluate_job(life, methods)
+        if args.debounce >= 2:
+            rows += debounce(rows, args.debounce)
         with open(out / "job_decisions.csv", "w", newline="") as f:
             w = csv.DictWriter(f, fieldnames=list(asdict(rows[0]).keys()) if rows else ["empty"]); w.writeheader()
             for r in rows:
