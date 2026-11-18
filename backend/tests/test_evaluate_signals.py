@@ -165,3 +165,31 @@ class TestLoaders(unittest.TestCase):
         self.assertEqual((life.deployment, life.end_reason), ("disk-leak", "Evicted"))
         [job] = load_job_lives(self.NS)
         self.assertEqual((job.case, job.completions), ("positive", 20.0))
+
+
+def _decisions(job, case, alerts, method="linear", start=None):
+    from app.predictor.evaluate_signals import JobDecision
+    start = start or datetime(2026, 11, 1, 10, 0, tzinfo=timezone.utc)
+    deadline = start + timedelta(seconds=285)
+    return [JobDecision(workload="deadline-job", job=job, case=case, origin=start + timedelta(seconds=20 * (i + 1)),
+                        elapsed_fraction=20 * (i + 1) / 285, method=method, alert=a, status="late" if a else "on_time",
+                        deadline=deadline) for i, a in enumerate(alerts)]
+
+
+def test_debounce_needs_two_late_decisions_in_a_row():
+    from app.predictor.evaluate_signals import debounce
+    rows = _decisions("j1", "positive", [True, False, True, True, True])
+    rows += _decisions("j1", "positive", [True] * 5, method="threshold80")         # thresholds are not debounced
+    out = debounce(rows)
+    assert {r.method for r in out} == {"linear+2x"}
+    assert [r.alert for r in sorted(out, key=lambda r: r.origin)] == [False, False, False, True, True]
+
+
+def test_debounce_removes_isolated_blips_but_keeps_late_jobs():
+    from app.predictor.evaluate_signals import debounce, summarize_jobs
+    rows = _decisions("on-time", "negative", [False, True, False, True, False, False])   # noisy early blips
+    rows += _decisions("late", "positive", [False, True, True, True, True, True])
+    summary = summarize_jobs(rows + debounce(rows))
+    assert summary["linear"]["false_alarm_jobs"] == 1 and summary["linear+2x"]["false_alarm_jobs"] == 0
+    assert summary["linear"]["missed"] == 0 and summary["linear+2x"]["missed"] == 0
+    assert summary["linear"]["warning_s_median"] - summary["linear+2x"]["warning_s_median"] == 20   # one step later
