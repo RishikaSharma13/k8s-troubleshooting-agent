@@ -173,6 +173,29 @@ to how results were judged, not to the forecast.
 
 ## Running it
 
+### Try it yourself (one command)
+
+On a Linux machine with **Docker** (usable without sudo), **[kind](https://kind.sigs.k8s.io/)**, **kubectl**,
+**Python 3.10+** and **curl** (plus **Helm** and **openssl** for monitoring):
+
+```bash
+git clone https://github.com/RishikaSharma13/k8s-troubleshooting-agent.git
+cd k8s-troubleshooting-agent
+scripts/setup-lab.sh --check              # what exists and what would be done; changes nothing
+scripts/setup-lab.sh                      # build the lab (15-20 min the first time), then start the services
+scripts/setup-lab.sh --with-monitoring    # optional: also Prometheus and Grafana
+```
+
+It creates a kind cluster (`aiops-lab`, Kubernetes v1.34.0), metrics-server (v0.7.2), PostgreSQL in Docker
+(on 127.0.0.1 only), the Python environment and schema, and the three lab namespaces; every step skips what
+already exists, so it never changes an existing setup. Then open **http://127.0.0.1:8000/ui**: within about
+20 minutes the leaking workload gets a predicted crash with an **Approve** button. With monitoring: Grafana at
+http://localhost:3000 (user `admin`, password in `~/.k8s-failure-lab-grafana-admin`), Prometheus at http://localhost:9090.
+
+Daily use: `scripts/start.sh` (after a reboot) and `scripts/stop.sh` (stops the services; data is kept).
+To remove the lab completely, deliberately, one command at a time:
+`kind delete cluster --name aiops-lab`, `docker rm -f k8s-agent-db`, `docker volume rm k8s-agent-db-data`.
+
 ### Prerequisites
 
 - Docker, [kind](https://kind.sigs.k8s.io/) and kubectl
