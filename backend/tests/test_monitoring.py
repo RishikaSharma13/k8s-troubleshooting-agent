@@ -53,3 +53,16 @@ def test_chart_version_picker_skips_recent_releases():
              "  prometheus:\n  - created: \"2026-11-01T10:00:00Z\"\n    version: 99.0.0\n")
     version, _ = pick.pick(index, datetime(2026, 11, 19, tzinfo=timezone.utc))
     assert version == "80.1.0"                     # 80.2.0 is only 2 days old; other charts are ignored
+
+
+def test_picker_reads_helm_nanosecond_timestamps():
+    """Seen on 19 Nov: Helm's index has 9 decimals, which Python 3.10 cannot parse directly."""
+    spec = importlib.util.spec_from_file_location("pick", MON / "pick_chart_version.py")
+    pick = importlib.util.module_from_spec(spec); spec.loader.exec_module(pick)
+    t = pick.parse_time("2026-11-18T22:44:41.030554039+00:00")
+    assert (t.year, t.microsecond, t.utcoffset().total_seconds()) == (2026, 30554, 0)
+    assert pick.parse_time("2026-10-01T10:00:00Z").tzinfo is not None
+    index = ("entries:\n  kube-prometheus-stack:\n"
+             "  - created: \"2026-11-18T22:44:41.030554039+00:00\"\n    version: 80.3.0\n"
+             "  - created: \"2026-10-20T08:12:03.123456789+00:00\"\n    version: 80.0.1\n")
+    assert pick.pick(index, datetime(2026, 11, 19, tzinfo=timezone.utc))[0] == "80.0.1"

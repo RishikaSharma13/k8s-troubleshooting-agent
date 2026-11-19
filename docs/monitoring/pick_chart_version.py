@@ -13,6 +13,12 @@ from datetime import datetime, timedelta, timezone
 CHART, MIN_AGE_DAYS = "kube-prometheus-stack", 14
 
 
+def parse_time(text: str) -> datetime:
+    """Helm writes nanoseconds (9 decimals); Python 3.10 accepts at most 6, so trim the fraction."""
+    text = re.sub(r"(\.\d{6})\d+", r"\1", text.replace("Z", "+00:00"))
+    return datetime.fromisoformat(text)
+
+
 def versions(index_text: str, chart: str = CHART) -> list[tuple[datetime, str]]:
     """(created, version) of each release of `chart` in a Helm repository index."""
     # the chart's section ends at the next chart name ("  other-chart:"), not at its own entries ("  - ...")
@@ -22,7 +28,7 @@ def versions(index_text: str, chart: str = CHART) -> list[tuple[datetime, str]]:
         created = re.search(r'^    created: "?([0-9T:.\-+Z]+)"?', "    " + entry, re.M)
         version = re.search(r"^    version: (\S+)", "    " + entry, re.M)
         if created and version:
-            out.append((datetime.fromisoformat(created.group(1).replace("Z", "+00:00")), version.group(1)))
+            out.append((parse_time(created.group(1)), version.group(1)))
     return out
 
 
