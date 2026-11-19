@@ -1,0 +1,32 @@
+# Prometheus, Alertmanager and Grafana for the failure forecasts (kind lab).
+# Install (see README "Monitoring"): helm install monitoring prometheus-community/kube-prometheus-stack
+#   --version <pinned, >= 14 days old> -n monitoring --create-namespace -f docs/monitoring/kube-prometheus-stack-values.yaml
+#   --set grafana.adminPassword=<random, generated at install time, never committed>
+prometheus:
+  prometheusSpec:
+    scrapeInterval: 15s
+    evaluationInterval: 15s
+    retention: 7d
+    ruleSelectorNilUsesHelmValues: false        # load docs/monitoring/forecast-rules.yaml without a release label
+    resources:
+      requests: {memory: 400Mi}
+      limits: {memory: 1500Mi}
+    additionalScrapeConfigs:
+      - job_name: k8s-failure-forecast
+        scrape_interval: 15s
+        static_configs:
+          - targets: ["172.18.0.1:9105"]        # the read-only exporter, on the kind Docker network gateway
+alertmanager:
+  alertmanagerSpec:
+    resources:
+      requests: {memory: 64Mi}
+      limits: {memory: 256Mi}
+grafana:
+  service: {type: ClusterIP}                    # reached with kubectl port-forward, not exposed
+  sidecar:
+    dashboards: {enabled: true, label: grafana_dashboard, searchNamespace: monitoring}
+# Control-plane components on kind are not reachable for scraping: disabled to avoid "target down" noise.
+kubeEtcd: {enabled: false}
+kubeControllerManager: {enabled: false}
+kubeScheduler: {enabled: false}
+kubeProxy: {enabled: false}

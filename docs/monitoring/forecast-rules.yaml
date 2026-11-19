@@ -1,0 +1,23 @@
+# Two alerts side by side: the forecast ("will hit its limit within 15 min") and the classic threshold
+# ("above 80% of its limit"), so they can be compared in the tools teams already use.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: k8s-failure-forecast
+  namespace: monitoring
+spec:
+  groups:
+    - name: failure-forecast
+      rules:
+        - alert: MemoryLimitPredictedSoon
+          expr: k8s_failure_seconds_to_limit < 900
+          for: 1m
+          labels: {severity: warning, method: forecast}
+          annotations:
+            summary: "{{ $labels.namespace }}/{{ $labels.deployment }} is predicted to hit its memory limit in {{ $value | humanizeDuration }}"
+        - alert: MemoryAbove80Percent
+          expr: k8s_failure_memory_usage_ratio > 0.8
+          for: 1m
+          labels: {severity: warning, method: threshold}
+          annotations:
+            summary: "{{ $labels.namespace }}/{{ $labels.deployment }} is above 80% of its memory limit ({{ $value | humanizePercentage }})"
