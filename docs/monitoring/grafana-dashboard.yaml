@@ -1,0 +1,226 @@
+# Grafana dashboard for the failure forecasts, provisioned automatically by the Grafana sidecar
+# (it loads ConfigMaps labelled grafana_dashboard in the monitoring namespace).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: failure-forecast-dashboard
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+data:
+  failure-forecast.json: |
+    {
+      "uid": "k8s-failure-forecast",
+      "title": "Failure forecasts",
+      "schemaVersion": 39,
+      "refresh": "30s",
+      "time": {
+        "from": "now-3h",
+        "to": "now"
+      },
+      "tags": [
+        "k8s-failure-forecast"
+      ],
+      "panels": [
+        {
+          "id": 1,
+          "type": "timeseries",
+          "title": "Predicted time to memory limit (with calibrated 80% range)",
+          "datasource": {
+            "type": "prometheus"
+          },
+          "gridPos": {
+            "x": 0,
+            "y": 0,
+            "w": 24,
+            "h": 8
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "k8s_failure_seconds_to_limit",
+              "legendFormat": "{{namespace}}/{{deployment}}",
+              "datasource": {
+                "type": "prometheus"
+              }
+            },
+            {
+              "refId": "B",
+              "expr": "k8s_failure_seconds_to_limit_lower",
+              "legendFormat": "{{deployment}} range low",
+              "datasource": {
+                "type": "prometheus"
+              }
+            },
+            {
+              "refId": "C",
+              "expr": "k8s_failure_seconds_to_limit_upper",
+              "legendFormat": "{{deployment}} range high",
+              "datasource": {
+                "type": "prometheus"
+              }
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "type": "timeseries",
+          "title": "Memory used / limit (the classic 80% alert line)",
+          "datasource": {
+            "type": "prometheus"
+          },
+          "gridPos": {
+            "x": 0,
+            "y": 8,
+            "w": 12,
+            "h": 8
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 0.8
+                  }
+                ]
+              },
+              "custom": {
+                "thresholdsStyle": {
+                  "mode": "line"
+                }
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "k8s_failure_memory_usage_ratio",
+              "legendFormat": "{{namespace}}/{{deployment}}",
+              "datasource": {
+                "type": "prometheus"
+              }
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "type": "timeseries",
+          "title": "Alerts firing: forecast vs threshold",
+          "datasource": {
+            "type": "prometheus"
+          },
+          "gridPos": {
+            "x": 12,
+            "y": 8,
+            "w": 12,
+            "h": 8
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "count by (alertname) (ALERTS{alertstate=\"firing\",alertname=~\"MemoryLimitPredictedSoon|MemoryAbove80Percent\"})",
+              "legendFormat": "{{alertname}}",
+              "datasource": {
+                "type": "prometheus"
+              }
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "type": "bargauge",
+          "title": "Incidents by verdict",
+          "datasource": {
+            "type": "prometheus"
+          },
+          "gridPos": {
+            "x": 0,
+            "y": 16,
+            "w": 12,
+            "h": 7
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "k8s_failure_incidents",
+              "legendFormat": "{{outcome}}",
+              "datasource": {
+                "type": "prometheus"
+              },
+              "instant": true
+            }
+          ],
+          "options": {
+            "orientation": "horizontal",
+            "displayMode": "basic"
+          }
+        },
+        {
+          "id": 5,
+          "type": "bargauge",
+          "title": "Executions by result",
+          "datasource": {
+            "type": "prometheus"
+          },
+          "gridPos": {
+            "x": 12,
+            "y": 16,
+            "w": 12,
+            "h": 7
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "k8s_failure_executions",
+              "legendFormat": "{{action}} {{status}}",
+              "datasource": {
+                "type": "prometheus"
+              },
+              "instant": true
+            }
+          ],
+          "options": {
+            "orientation": "horizontal",
+            "displayMode": "basic"
+          }
+        }
+      ]
+    }
