@@ -66,3 +66,19 @@ def test_picker_reads_helm_nanosecond_timestamps():
              "  - created: \"2026-11-18T22:44:41.030554039+00:00\"\n    version: 80.3.0\n"
              "  - created: \"2026-10-20T08:12:03.123456789+00:00\"\n    version: 80.0.1\n")
     assert pick.pick(index, datetime(2026, 11, 19, tzinfo=timezone.utc))[0] == "80.0.1"
+
+
+def test_verdict_colours_mean_what_they_say():
+    cm = yaml.safe_load((MON / "grafana-dashboard.yaml").read_text())
+    panels = {p["title"]: p for p in json.loads(cm["data"]["failure-forecast.json"])["panels"]}
+    rules = {o["matcher"]["options"]: o["properties"][0]["value"]["fixedColor"]
+             for o in panels["Incidents by verdict"]["fieldConfig"]["overrides"]}
+    assert rules["^(CONFIRMED|AVOIDED)$"] == "green" and rules["^NOT_(CONFIRMED|AVOIDED)$"] == "red"
+
+
+def test_start_script_is_valid_bash():
+    import shutil, subprocess
+    script = Path(__file__).resolve().parents[2] / "scripts" / "start.sh"
+    assert subprocess.run(["bash", "-n", str(script)]).returncode == 0
+    if shutil.which("shellcheck"):
+        assert subprocess.run(["shellcheck", "-S", "warning", str(script)], capture_output=True).returncode == 0
