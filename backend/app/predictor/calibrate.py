@@ -23,7 +23,9 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import math
+import os
 import statistics
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,6 +34,9 @@ from typing import Optional, Sequence
 LEVEL = 0.80
 BUCKETS_S = (0, 300, 600, 1200, 1800)
 MIN_N = 30
+
+
+DEFAULT_CORRECTIONS = Path("docs/results/calibration-memory.json")   # read by the dashboard and the watcher
 
 
 @dataclass
@@ -121,6 +126,36 @@ def evaluate(rows: Sequence[Row], cal: dict) -> dict:
     return out
 
 
+def save_corrections(path: Path, cal: dict, method: str, calibrated_on: str, test: dict) -> None:
+    """The corrections the live system uses, with their provenance and measured coverage."""
+    path.write_text(json.dumps({
+        "method": method, "level": LEVEL, "buckets_s": list(BUCKETS_S),
+        "bounds_s": [[cal[b][0], cal[b][1]] for b in sorted(cal)],
+        "calibrated_on": calibrated_on,
+        "test_coverage": round(test["all"]["cal_coverage"], 3) if "all" in test else None,
+        "original_coverage": round(test["all"]["raw_coverage"], 3) if "all" in test else None,
+    }, indent=2) + "\n")
+
+
+def load_corrections(path: Optional[Path] = None) -> Optional[dict]:
+    """Corrections from CALIBRATION_FILE or the default file; None if missing or malformed (then no range is shown)."""
+    p = Path(path or os.environ.get("CALIBRATION_FILE") or DEFAULT_CORRECTIONS)
+    try:
+        c = json.loads(p.read_text())
+        assert len(c["bounds_s"]) == len(c["buckets_s"]) - 1 and c["method"]
+        return c
+    except Exception:
+        return None
+
+
+def calibrated_range_s(eta_s: float, corr: dict) -> tuple[float, float]:
+    """The calibrated range (seconds from now) around a forecast of eta_s seconds."""
+    edges = corr["buckets_s"]
+    i = next((k for k in range(len(edges) - 1) if eta_s < edges[k + 1]), len(edges) - 2)
+    lo, hi = corr["bounds_s"][i]
+    return max(0.0, eta_s + lo), eta_s + hi
+
+
 def report(cal: dict, test: dict, method: str, cal_path: str, test_path: str, n_cal: int) -> str:
     pct = lambda v: f"{100 * v:.0f}%"
     sec = lambda v: "-" if v is None else f"{v:.0f}"
@@ -148,11 +183,15 @@ def main(argv=None) -> int:
     ap.add_argument("--test", required=True, type=Path, help="decisions.csv of a later evaluation (unseen)")
     ap.add_argument("--method", default="linear")
     ap.add_argument("--out", type=Path, help="write the report here (default: print it)")
+    ap.add_argument("--save", type=Path, help="also write the corrections for the live system (JSON)")
+    ap.add_argument("--calibrated-on", default="", help="label for the calibration window, stored with --save")
     args = ap.parse_args(argv)
     cal_rows = load(args.calibration, args.method)
     cal = fit(cal_rows)
-    text = report(cal, evaluate(load(args.test, args.method), cal), args.method, str(args.calibration),
-                  str(args.test), len(cal_rows))
+    test = evaluate(load(args.test, args.method), cal)
+    text = report(cal, test, args.method, str(args.calibration), str(args.test), len(cal_rows))
+    if args.save:
+        save_corrections(args.save, cal, args.method, args.calibrated_on or str(args.calibration), test)
     if args.out:
         args.out.write_text(text)
     print(text)

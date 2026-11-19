@@ -261,3 +261,13 @@ def test_live_chart_is_not_stretched_right_after_a_restart():
     png = base64.b64decode(dashboard.chart_recent([life]))
     width = struct.unpack(">I", png[16:20])[0]                                   # PNG header: image width
     assert width < 1400, width
+
+
+def test_range_text_only_for_the_calibrated_method(tmp_path, monkeypatch):
+    import json as _json
+    (tmp_path / "c.json").write_text(_json.dumps({"method": "linear", "buckets_s": [0, 300, 600, 1200, 1800],
+                                                  "bounds_s": [[-4, -1], [-5, 0], [-9, 5], [-8, 0]]}))
+    monkeypatch.setenv("CALIBRATION_FILE", str(tmp_path / "c.json"))
+    start = datetime(2026, 11, 19, 6, 0, tzinfo=timezone.utc)
+    assert "80% range 11:44:51–11:45:05, calibrated" in dashboard.range_text(start, 900, "linear")
+    assert dashboard.range_text(start, 900, "prophet") == ""          # Prophet was not calibrated: no range

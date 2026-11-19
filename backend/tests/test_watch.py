@@ -108,3 +108,17 @@ class TestWatcher(unittest.TestCase):
     def test_only_the_requested_namespace(self):
         self._ramp(T0, 100, 20, ns=NS + "-other")
         self.assertEqual(scan(NS, now=T0 + timedelta(seconds=285)), [])
+
+
+def test_incident_reasoning_includes_the_calibrated_range_only_when_calibrated(tmp_path, monkeypatch):
+    import json as _json
+    from datetime import datetime, timedelta, timezone
+    from app.remediation.watch import Prediction, range_note
+    t = datetime(2026, 11, 19, 6, 0, tzinfo=timezone.utc)
+    p = Prediction("ns", "leak", "pod", "c", t, t + timedelta(minutes=15), 15.0, 80.0, 256.0, 12.0)
+    monkeypatch.setenv("CALIBRATION_FILE", str(tmp_path / "none.json"))
+    assert range_note(p) == ""                                         # no calibration: no range, never invented
+    (tmp_path / "c.json").write_text(_json.dumps({"method": "linear", "buckets_s": [0, 300, 600, 1200, 1800],
+                                                  "bounds_s": [[-4, -1], [-5, 0], [-9, 5], [-8, 0]]}))
+    monkeypatch.setenv("CALIBRATION_FILE", str(tmp_path / "c.json"))
+    assert range_note(p) == "; 80% range 06:14:51-06:15:05"            # 15 min ahead: the 10-20 min correction
