@@ -94,7 +94,7 @@ def chart_prediction_example(lives):
             ax.axvspan(t_o + timedelta(seconds=r.eta_earliest_s), hi, color="black", alpha=0.08,
                        label="80% interval (uncalibrated)")
         ax.axvline(predicted, color="black", ls="--", lw=1)
-        err = (predicted - life.end_time).total_seconds()
+        err = (life.end_time - predicted).total_seconds()     # actual minus predicted, as everywhere else
         note = (f"Predicted kill {predicted.astimezone(IST):%H:%M:%S}, actual {life.end_time.astimezone(IST):%H:%M:%S} "
                 f"IST: error {err:+.0f} s, predicted {r.eta_s / 60:.1f} min ahead.")
         from app.predictor.calibrate import calibrated_range_s, load_corrections
