@@ -93,6 +93,17 @@ def scan(namespace: str, now: Optional[datetime] = None, horizon_s: float = DEFA
     return out
 
 
+def range_note(p: Prediction) -> str:
+    """'; 80% range a-b' from the calibration file, or empty when there is none (never invented)."""
+    from app.predictor.calibrate import calibrated_range_s, load_corrections
+    corr = load_corrections()
+    if not corr or corr["method"] != "linear":
+        return ""
+    now = p.predicted_failure_at - timedelta(minutes=p.minutes_left)
+    lo, hi = (now + timedelta(seconds=s) for s in calibrated_range_s(p.minutes_left * 60, corr))
+    return f"; 80% range {lo:%H:%M:%S}-{hi:%H:%M:%S}"
+
+
 def raise_incidents(predictions: list[Prediction], session_factory: Callable = SessionLocal) -> int:
     """Store one PENDING forecast incident per container life; returns how many were new."""
     if not predictions:
@@ -106,7 +117,8 @@ def raise_incidents(predictions: list[Prediction], session_factory: Callable = S
             risk_level=risk_level(p.minutes_left), status="PENDING", recommended_action=action,
             confidence=None,          # deliberately empty: no invented confidence number
             reasoning=(f"Forecast (linear): {p.last_mib:.0f}/{p.limit_mib:.0f} MiB, {p.trend_mib_per_min:+.1f} MiB/min, "
-                       f"limit expected at {p.predicted_failure_at:%H:%M:%S} UTC (in {p.minutes_left:.1f} min). " + why)[:500],
+                       f"limit expected at {p.predicted_failure_at:%H:%M:%S} UTC (in {p.minutes_left:.1f} min"
+                       f"{range_note(p)}). " + why)[:500],
             source="forecast", predicted_failure_at=p.predicted_failure_at, life_started_at=p.life_started_at))
     stmt = (insert(Incident).values(rows)
             .on_conflict_do_nothing(index_elements=["namespace", "deployment", "pod_name", "life_started_at"],

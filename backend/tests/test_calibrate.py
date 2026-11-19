@@ -62,3 +62,29 @@ def test_reads_an_evaluation_file_and_writes_a_report(tmp_path):
     assert c.main(["--calibration", str(tmp_path / "cal.csv"), "--test", str(tmp_path / "test.csv"), "--out", str(out)]) == 0
     text = out.read_text()
     assert "Calibrated time-to-limit ranges" in text and "| **all** |" in text
+
+
+def test_corrections_round_trip_and_ranges(tmp_path, monkeypatch):
+    rows = _rows(2000, seed=8)
+    corr_path = tmp_path / "corr.json"
+    cal_csv, test_csv = tmp_path / "cal.csv", tmp_path / "test.csv"
+    for p, rs in ((cal_csv, rows), (test_csv, _rows(500, seed=9))):
+        with open(p, "w", newline="") as f:
+            w = csv.writer(f); w.writerow(["method", "case", "eta_s", "time_to_oom_s", "eta_earliest_s", "eta_latest_s"])
+            for r in rs:
+                w.writerow(["linear", "positive", r.eta_s, r.actual_s, r.earliest_s, r.latest_s])
+    assert c.main(["--calibration", str(cal_csv), "--test", str(test_csv), "--save", str(corr_path),
+                   "--calibrated-on", "21-26 Oct"]) == 0
+    corr = c.load_corrections(corr_path)
+    assert corr["method"] == "linear" and corr["calibrated_on"] == "21-26 Oct" and 0.7 < corr["test_coverage"] < 0.9
+    near, far = c.calibrated_range_s(60, corr), c.calibrated_range_s(1500, corr)
+    assert near[0] < 60 < near[1] and (far[1] - far[0]) > (near[1] - near[0])
+    assert c.calibrated_range_s(1, {"buckets_s": [0, 300], "bounds_s": [[-50, 5]], "method": "linear"})[0] == 0.0
+    monkeypatch.setenv("CALIBRATION_FILE", str(corr_path))
+    assert c.load_corrections() is not None                            # the live system finds it via the setting
+
+
+def test_missing_or_malformed_corrections_mean_no_range(tmp_path):
+    assert c.load_corrections(tmp_path / "missing.json") is None
+    (tmp_path / "bad.json").write_text('{"method": "linear", "buckets_s": [0, 300], "bounds_s": []}')
+    assert c.load_corrections(tmp_path / "bad.json") is None

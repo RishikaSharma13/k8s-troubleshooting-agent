@@ -91,11 +91,20 @@ def chart_prediction_example(lives):
         predicted = t_o + timedelta(seconds=r.eta_s)
         if r.eta_earliest_s is not None:
             hi = t_o + timedelta(seconds=r.eta_latest_s) if r.eta_latest_s is not None else predicted
-            ax.axvspan(t_o + timedelta(seconds=r.eta_earliest_s), hi, color="black", alpha=0.08, label="80% interval")
+            ax.axvspan(t_o + timedelta(seconds=r.eta_earliest_s), hi, color="black", alpha=0.08,
+                       label="80% interval (uncalibrated)")
         ax.axvline(predicted, color="black", ls="--", lw=1)
         err = (predicted - life.end_time).total_seconds()
         note = (f"Predicted kill {predicted.astimezone(IST):%H:%M:%S}, actual {life.end_time.astimezone(IST):%H:%M:%S} "
                 f"IST: error {err:+.0f} s, predicted {r.eta_s / 60:.1f} min ahead.")
+        from app.predictor.calibrate import calibrated_range_s, load_corrections
+        corr = load_corrections()
+        if corr and corr["method"] == "linear":
+            lo, hi = (t_o + timedelta(seconds=s) for s in calibrated_range_s(r.eta_s, corr))
+            ax.axvspan(lo, hi, color="#2ca02c", alpha=0.25, label="80% range, calibrated")
+            inside = "inside" if lo <= life.end_time <= hi else "outside"
+            note += (f" Calibrated 80% range {lo.astimezone(IST):%H:%M:%S}–{hi.astimezone(IST):%H:%M:%S}: "
+                     f"the real crash fell {inside} it.")
     ax.axvline(life.end_time, color="#d62728", ls=":", lw=1.5, label="actual OOMKill")
     ax.set_ylim(0, 300); ax.set_xlim(life.times[0], life.end_time + timedelta(minutes=3))
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M", tz=IST)); ax.set_xlabel("time (IST)")
@@ -158,6 +167,17 @@ def chart_evaluation(rows):
     return png(fig)
 
 
+def range_text(start, eta_s: float, method: str) -> str:
+    """' (80% range a-b, calibrated)' when calibration exists for this method; empty otherwise (never invented)."""
+    from app.predictor.calibrate import calibrated_range_s, load_corrections
+    corr = load_corrections()
+    if not corr or corr["method"] != method:
+        return ""
+    lo, hi = calibrated_range_s(eta_s, corr)
+    a, b = (start + timedelta(seconds=s) for s in (lo, hi))
+    return f' <span class="muted">(80% range {a.astimezone(IST):%H:%M:%S}–{b.astimezone(IST):%H:%M:%S}, calibrated)</span>'
+
+
 def live_forecasts():
     out = []
     for dep in DEPLOYMENTS:
@@ -165,7 +185,8 @@ def live_forecasts():
             for _, r in forecast_deployment(NS, dep, method=method):
                 if r.status == "crossing_predicted" and r.eta_s is not None:
                     at = (r.window_end + timedelta(seconds=r.eta_s)).astimezone(IST)
-                    verdict = f"reaches limit in <b>{r.eta_s / 60:.1f} min</b>, at about <b>{at:%H:%M:%S}</b> IST"
+                    verdict = (f"reaches limit in <b>{r.eta_s / 60:.1f} min</b>, at about <b>{at:%H:%M:%S}</b> IST"
+                               + range_text(r.window_end, r.eta_s, method))
                     css = "warn"
                 elif r.status == "no_crossing":
                     verdict = f"not expected to reach the limit within {r.horizon_s / 60:.0f} min"; css = "ok"
