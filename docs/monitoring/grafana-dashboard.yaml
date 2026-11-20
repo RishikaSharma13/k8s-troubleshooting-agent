@@ -50,7 +50,7 @@ data:
           "targets": [
             {
               "refId": "A",
-              "expr": "k8s_failure_seconds_to_limit",
+              "expr": "min by (namespace, deployment) (k8s_failure_seconds_to_limit)",
               "legendFormat": "{{namespace}}/{{deployment}}",
               "datasource": {
                 "type": "prometheus"
@@ -58,7 +58,7 @@ data:
             },
             {
               "refId": "B",
-              "expr": "k8s_failure_seconds_to_limit_lower",
+              "expr": "min by (namespace, deployment) (k8s_failure_seconds_to_limit_lower)",
               "legendFormat": "{{deployment}} range low",
               "datasource": {
                 "type": "prometheus"
@@ -66,7 +66,7 @@ data:
             },
             {
               "refId": "C",
-              "expr": "k8s_failure_seconds_to_limit_upper",
+              "expr": "min by (namespace, deployment) (k8s_failure_seconds_to_limit_upper)",
               "legendFormat": "{{deployment}} range high",
               "datasource": {
                 "type": "prometheus"
@@ -120,7 +120,7 @@ data:
           "targets": [
             {
               "refId": "A",
-              "expr": "k8s_failure_memory_usage_ratio",
+              "expr": "max by (namespace, deployment) (k8s_failure_memory_usage_ratio)",
               "legendFormat": "{{namespace}}/{{deployment}}",
               "datasource": {
                 "type": "prometheus"
