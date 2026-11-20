@@ -251,16 +251,26 @@ def summarize(rows: Sequence[OriginRow], horizon_s: float) -> dict:
         pos = [r for r in rs if r.case == "positive"]
         neg = [r for r in rs if r.case == "negative"]
         lives = sorted({r.life_id for r in pos})
-        leads, misses = [], 0
+        leads, sustained, misses = [], [], 0
         for life_id in lives:
-            alerts = sorted((r for r in pos if r.life_id == life_id and r.alert), key=lambda r: r.origin)
+            decisions = sorted((r for r in pos if r.life_id == life_id), key=lambda r: r.origin)
+            alerts = [r for r in decisions if r.alert]
             if alerts:
                 leads.append(alerts[0].time_to_oom_s / 60)
             else:
                 misses += 1
+            # sustained warning: the alert run still on at the life's last decision (0 if it was off by then);
+            # unlike "since the first alert", alerts that flicker on and off early cannot inflate it
+            run = None
+            for r in reversed(decisions):
+                if not r.alert:
+                    break
+                run = r
+            sustained.append(run.time_to_oom_s / 60 if run else 0.0)
         early = sum(1 for r in pos if r.alert and r.time_to_oom_s > horizon_s)
         res = {"oom_lives": len(lives), "missed": misses,
                "lead_min_median": _median(leads), "lead_min_min": min(leads) if leads else None,
+               "sustained_min_median": _median(sustained),
                "early_alert_origins": early,
                "negative_origins": len(neg),
                "false_alarm_rate": (sum(r.alert for r in neg) / len(neg)) if neg else None,
@@ -409,14 +419,16 @@ def write_report(path: Path, namespace: str, lives: Sequence[Life], cases: dict,
     for dep in deps:
         methods = [m for d, m in summary if d == dep]
         L += [f"## {dep}", "",
-              "| Method | OOM lives | Missed | Lead time median (min) | Lead time min (min) | Early alerts | "
+              "| Method | OOM lives | Missed | Lead time median (min) | Lead time min (min) | "
+              "Sustained warning median (min) | Early alerts | "
               "False-alarm rate | False-alarm episodes | Bias @10m (min) | Abs err @10m | Coverage @10m | "
               "Bias @5m | Abs err @5m | Coverage @5m | 5-min value MAE (MiB) |",
-              "|" + "---|" * 15]
+              "|" + "---|" * 16]
         for m in methods:
             s = summary[(dep, m)]
             L.append("| " + " | ".join([
                 m, str(s["oom_lives"]), str(s["missed"]), fmt(s["lead_min_median"]), fmt(s["lead_min_min"]),
+                fmt(s.get("sustained_min_median")),
                 str(s["early_alert_origins"]), fmt(s["false_alarm_rate"], pct=True), str(s["false_alarm_episodes"]),
                 fmt(s["cp600_bias_min"], "+.2f"), fmt(s["cp600_abs_err_min"], ".2f"), fmt(s["cp600_coverage"], pct=True),
                 fmt(s["cp300_bias_min"], "+.2f"), fmt(s["cp300_abs_err_min"], ".2f"), fmt(s["cp300_coverage"], pct=True),
@@ -428,6 +440,8 @@ def write_report(path: Path, namespace: str, lives: Sequence[Life], cases: dict,
                   ", ".join(f"threshold{p}: {fmt(v, pct=True)}" for (_, p), v in shares.items()) + ".", ""]
     L += ["## How to read this", "",
           "- Bias > 0 means the forecast was late: it promised more time than there was.",
+          "- Lead time counts from the first alert; sustained warning counts only the alert run still on at the end, "
+          "so alerts that flicker on and off early cannot inflate it.",
           "- Coverage is how often the actual time-to-OOMKill fell inside the forecast's interval.",
           "- '-' means not applicable or no data (thresholds and persistence give no time-to-limit).",
           "- Results come from synthetic, controlled workloads in one kind cluster; they demonstrate the "
@@ -443,6 +457,8 @@ def main(argv=None) -> int:
     parser.add_argument("--until", help="ISO time (UTC)")
     parser.add_argument("--origin-step-s", type=float, default=60.0)
     parser.add_argument("--horizon-min", type=float, default=DEFAULT_HORIZON_S / 60)
+    parser.add_argument("--lookback-min", type=float, default=DEFAULT_LOOKBACK_S / 60,
+                        help="minutes of history each forecast uses (default 15)")
     parser.add_argument("--methods", default=",".join(FORECAST_METHODS))
     parser.add_argument("--thresholds", default=",".join(map(str, DEFAULT_THRESHOLDS)))
     args = parser.parse_args(argv)
@@ -461,7 +477,7 @@ def main(argv=None) -> int:
     print(f"{len(lives)} lives loaded, {len(scored)} scored; evaluating methods={methods} thresholds={thresholds}")
     rows: list[OriginRow] = []
     for n, life in enumerate(scored, 1):
-        rows += evaluate_life(life, cases[life.life_id], args.origin_step_s, horizon_s, DEFAULT_LOOKBACK_S,
+        rows += evaluate_life(life, cases[life.life_id], args.origin_step_s, horizon_s, args.lookback_min * 60,
                               methods, thresholds)
         print(f"  [{n}/{len(scored)}] {life.life_id} ({cases[life.life_id]}, {len(life.times)} samples) "
               f"elapsed {time.monotonic() - started:.0f}s", flush=True)
@@ -472,7 +488,7 @@ def main(argv=None) -> int:
             w.writerow(asdict(r))
     summary = summarize(rows, horizon_s)
     params = {"origin_step_s": args.origin_step_s, "horizon_min": args.horizon_min,
-              "lookback_min": DEFAULT_LOOKBACK_S / 60, "since": args.since, "until": args.until}
+              "lookback_min": args.lookback_min, "since": args.since, "until": args.until}
     if args.since:
         params["failing lives excluded because they started before --since"] = before_window
     write_report(out / "report.md", args.namespace, lives, cases, summary, params, thresholds)

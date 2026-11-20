@@ -233,3 +233,33 @@ class TestLoadLives(unittest.TestCase):
         cases = classify(lives)
         self.assertEqual(sorted(cases[l.life_id] + ":" + l.deployment for l in lives),
                          ["negative:flat", "positive:leak"])
+
+
+def _rows(alerts, life="L1", dep="cycle-leak", method="linear"):
+    from app.predictor.evaluate import OriginRow
+    t0 = datetime(2026, 11, 19, 6, 0, tzinfo=timezone.utc)
+    n = len(alerts)
+    return [OriginRow(dep, "p", life, "positive", t0 + timedelta(minutes=i), method, a, "crossing_predicted" if a else "no_crossing",
+                      100.0, 256.0, float((n - i) * 60)) for i, a in enumerate(alerts)]
+
+
+def test_sustained_warning_ignores_early_flicker():
+    """Seen on 20 Nov: on a cyclic workload, alerts at the very start of a life inflated 'lead time' to 98 min."""
+    from app.predictor.evaluate import summarize
+    alerts = [True, True, False, False, False, False, True, False, True, True, True]   # 11 decisions, 1 min apart
+    s = summarize(_rows(alerts), horizon_s=1800)[("cycle-leak", "linear")]
+    assert s["lead_min_median"] == 11.0                     # from the first alert: inflated by the early flicker
+    assert s["sustained_min_median"] == 3.0                 # the run still on at the end started 3 min before the OOM
+
+
+def test_sustained_warning_is_zero_when_the_alert_was_off_at_the_end():
+    from app.predictor.evaluate import summarize
+    s = summarize(_rows([True, True, True, False]), horizon_s=1800)[("cycle-leak", "linear")]
+    assert s["missed"] == 0 and s["sustained_min_median"] == 0.0
+
+
+def test_lookback_option_reaches_the_report_parameters():
+    import argparse, inspect
+    from app.predictor import evaluate
+    src = inspect.getsource(evaluate.main)
+    assert "--lookback-min" in src and "args.lookback_min * 60" in src and '"lookback_min": args.lookback_min' in src
