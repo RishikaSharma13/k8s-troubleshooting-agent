@@ -114,6 +114,9 @@ At the halfway point the predicted finish time was accurate to about 7 seconds (
   forecasts (1.8 vs 2.6 MiB error), although the forecasts raised no false alarms.
 - **Disk is re-measured only every ~70–100 s** by the kubelet, so storage predictions are coarser than memory ones.
 - **The startup-step fix was not re-tested on unseen data:** `disk-flat` did not restart inside the window.
+- **Realistic patterns expose limits:** cyclic memory defeats a 15-minute look-back (fixed by 45 minutes on a small
+  sample), and random spikes make crashes come earlier than any trend predicts (see
+  [Realistic workloads](#realistic-workloads-where-the-method-holds-and-where-it-breaks)).
 - **Controlled workloads in one local cluster:** this demonstrates the method, not production accuracy.
 
 ---
@@ -237,6 +240,46 @@ Alerting only after **two "late" predictions in a row**, on 973 Jobs (26 Oct –
 
 A quarter fewer false alarms at no cost in missed Jobs, but most false alarms persist across several decisions, so
 debouncing alone is not the fix. Report: [`docs/results/jobs-debounce-2026-11-18.md`](docs/results/jobs-debounce-2026-11-18.md).
+
+---
+
+## Realistic workloads: where the method holds and where it breaks
+
+All earlier results come from perfectly linear leaks. Three workloads in `pattern-lab` mimic real behaviour (parameters
+fixed before collecting any data): **`cycle-leak`** (a 20-minute wave on a 2 MiB/min leak, like daily traffic,
+compressed), **`noisy-leak`** (a 3 MiB/min leak with noise and rare +40 MiB spikes) and **`step-leak`** (+25 MiB
+every 5 minutes, like a cache filling in batches).
+
+The evaluation now also reports **sustained warning**: how long the alert was continuously on before the crash.
+"Lead time" counts from the first alert, so alerts that flicker on and off early can inflate it; sustained warning
+cannot be inflated.
+
+**19–20 Nov, 15-minute look-back** (7–16 crashes per workload; report
+[A](docs/results/pattern-lab-2026-11-20-A.md)):
+
+| Workload | Sustained warning: forecast | Sustained warning: 80% alert | Timing 10 min before the crash | |
+|---|---|---|---|---|
+| `step-leak` (16 crashes) | **32.9 min** | 9.5 min | within 0.2 min; range right 100% | works well |
+| `noisy-leak` (11) | **25.6 min** | 10.2 min | **5.6 min late**; range right ~30% | useful, but promises too much time |
+| `cycle-leak` (7) | **0 min** | 5.6 min | 8.8 min early; range right 0% | **fails** |
+
+On `cycle-leak`, lead time looked like 98 minutes, but the alert was **off at every crash**: early alerts on each
+upswing, nothing when it mattered. Even the 80% alert did better there. Prophet matched linear regression everywhere.
+
+**A pre-declared test of a 45-minute look-back** (more than two cycles; the cycle length is known from the workload's
+design, so this is not tuned to results), scored on 20 Nov only and compared with 15 minutes on the same data (reports
+[B](docs/results/pattern-lab-2026-11-20-B.md), [C](docs/results/pattern-lab-2026-11-20-C.md)):
+
+| Workload | Sustained warning (15 → 45 min) | Timing 10 min before (15 → 45 min) |
+|---|---|---|
+| `cycle-leak` (3 crashes) | **0 → 34.6 min** | 9.5 min early → **1.0 min early**; range right 0% → 100% |
+| `noisy-leak` (5) | 21.9 → 21.9 min | 6.2 → 9.1 min late |
+| `step-leak` (7) | 32.8 → 32.0 min | 0.2 → 1.2 min early |
+
+Findings: seeing more than two cycles **fixes the cyclic case** (indicative: 3 crashes); **spikes are a real limit**
+of any trend-based forecast, so noisy workloads need a safety margin rather than a better trend; and no single
+look-back suits every pattern, which points to an **adaptive look-back**. Prophet's built-in seasonalities are daily
+and weekly, so a fair Prophet test on a 20-minute cycle would need a custom seasonality.
 
 ---
 
@@ -405,12 +448,15 @@ docs/results/              committed evaluation reports
 - **Remove unsafe paths; deploy only what is merged.** The old executor (no dry run, guessed limits, no records) ran
   once because a service was restarted before the new code was merged. It was deleted, not kept beside the new one,
   and every deployment now starts with a check that the merged code is really there.
+- **Measure the warning that is still on when it matters.** On cyclic memory, "time since the first alert" reported 98
+  minutes of warning while the alert was off at every crash; "sustained warning" exposed it.
 
 ---
 
 ## What's next
 
-- Fix what the realistic workloads expose (for example, a longer look-back for cyclic memory), then re-test on new data.
+- An adaptive look-back (detect a repeating pattern, then look back over two of its cycles), re-tested on new data.
+- A safety margin for spiky workloads, from their own calibrated errors; a fair Prophet test with a custom seasonality.
 - Find the cause of persistent early Job alerts (probably start-up time counted as slow progress).
 - Calibrate the storage ranges as well.
 - Run the collector and watcher inside the cluster with a read-only service account, instead of on a laptop.
