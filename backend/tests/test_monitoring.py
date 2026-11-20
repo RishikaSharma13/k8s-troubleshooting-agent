@@ -82,3 +82,14 @@ def test_start_script_is_valid_bash():
     assert subprocess.run(["bash", "-n", str(script)]).returncode == 0
     if shutil.which("shellcheck"):
         assert subprocess.run(["shellcheck", "-S", "warning", str(script)], capture_output=True).returncode == 0
+
+
+def test_time_series_have_one_line_per_workload_not_per_pod():
+    """A restarted pod gets a new name; grouping by deployment keeps one continuous line per workload."""
+    cm = yaml.safe_load((MON / "grafana-dashboard.yaml").read_text())
+    for panel in json.loads(cm["data"]["failure-forecast.json"])["panels"]:
+        if panel["type"] != "timeseries":
+            continue
+        for t in panel["targets"]:
+            if "k8s_failure_" in t["expr"]:
+                assert "by (namespace, deployment)" in t["expr"], t["expr"]
