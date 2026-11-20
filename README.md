@@ -22,6 +22,11 @@ Three predictions, each scored against failures that Kubernetes itself recorded:
 - **Jobs (780 jobs):** **88% correct** at the halfway point about whether a Job will miss its deadline, where a
   "running too long" alert cannot decide at all.
 
+Beyond prediction: a **human-approved remediation loop** (in a controlled experiment, 10 of 10 approved actions
+prevented the predicted crash, while 10 of 10 left alone crashed), **calibrated 80% ranges** (79% coverage on unseen
+data), and **Prometheus/Grafana integration**, where a "will fail within 15 minutes" alert runs beside the classic
+"above 80%" one.
+
 > This is a learning and portfolio project, built and evaluated on controlled test workloads in a local
 > [kind](https://kind.sigs.k8s.io/) cluster. It demonstrates the method; the numbers are not general accuracy rates.
 
@@ -97,10 +102,12 @@ At the halfway point the predicted finish time was accurate to about 7 seconds (
 
 ### Honest limitations
 
-- **Prediction intervals are overconfident:** the actual time fell inside the 80% interval only 45–93% of the time
-  for memory and 14–36% for storage.
+- **Prediction intervals were overconfident:** the actual time fell inside the 80% interval only 45–93% of the time
+  for memory and 14–36% for storage. Memory ranges are now calibrated (79% on unseen data, see
+  [Measured improvements](#measured-improvements-on-new-data)); storage ranges are not yet.
 - **Early Job alerts are noisy:** 61% of on-time Jobs received at least one "late" alert in their first few
-  decisions, before enough items were done. Requiring two consecutive "late" predictions is the obvious next step.
+  decisions. Requiring two consecutive "late" predictions removed about a quarter of them; most persist, so the
+  cause lies elsewhere (see [Measured improvements](#measured-improvements-on-new-data)).
 - **Prophet was no better than linear regression** (slightly worse calibrated), because the test leaks are linear by
   design. Prophet's strengths (daily patterns, changing trends) are not exercised here.
 - **On the steady memory workload, "memory stays the same" predicted 5 minutes ahead slightly better** than the
@@ -168,6 +175,68 @@ executor's own dry run (`kubectl rollout restart` has no `--dry-run`); it is now
 after surprising numbers were investigated (a restarted container's later crash; a restart for an unrelated reason; a
 laptop suspend 49 s before a predicted crash), and all verdicts were recomputed each time. Every outlier traced back
 to how results were judged, not to the forecast.
+
+---
+
+## Monitoring with Prometheus and Grafana
+
+The forecasts are published as **Prometheus metrics**, so the same comparison can run in the tools teams already use.
+
+- **A read-only exporter** (`app/metrics/exporter.py`) serves only `GET /metrics` and `/health`. It is separate from
+  the API on purpose: the API has approve/execute endpoints and listens on 127.0.0.1 only, while the exporter listens
+  on the Docker network between the laptop and the kind cluster (reachable from pods, not from the LAN).
+- **Metrics:** `k8s_failure_seconds_to_limit` (with the calibrated `_lower`/`_upper`), `k8s_failure_memory_usage_ratio`,
+  `k8s_failure_forecast_status`, `k8s_failure_incidents` (by verdict), `k8s_failure_executions` (by result).
+- **kube-prometheus-stack** installed with Helm, pinned to a release at least 14 days old
+  (`docs/monitoring/pick_chart_version.py`); values in `docs/monitoring/kube-prometheus-stack-values.yaml`.
+- **Two alert rules side by side** (`docs/monitoring/forecast-rules.yaml`): `MemoryLimitPredictedSoon`
+  (`seconds_to_limit < 900`) and `MemoryAbove80Percent` (`usage_ratio > 0.8`), both with `for: 1m`.
+- **A Grafana dashboard** provisioned automatically (`docs/monitoring/grafana-dashboard.yaml`): time to limit with the
+  calibrated band, memory against the 80% line, alerts firing, incidents by verdict, executions by result.
+
+Seen live: the forecast alert fires for leaking workloads while they are still well below 80%. On the busy but stable
+`flat-hot`, whose memory moves between about 78% and 81%, the threshold rule never stays above 80% for a full minute,
+so it keeps resetting instead of firing: `for:` hides the flapping, at the cost of reacting more slowly to real leaks.
+
+Install with `scripts/setup-lab.sh --with-monitoring` (or the steps in that script); Grafana is then at
+http://localhost:3000 and Prometheus at http://localhost:9090 (port-forwards started by `scripts/start.sh`).
+
+---
+
+## Measured improvements on new data
+
+Both changes were decided **before** looking at the data they were scored on, and scored only on data collected after
+the original evaluation (26 Oct onwards).
+
+### Calibrated uncertainty ranges
+
+The forecast's own "80%" ranges contained the real crash time far less than 80% of the time. **Split conformal
+calibration** widens or narrows each range by the forecast's past errors, grouped by how far ahead it looks
+(0–5, 5–10, 10–20, 20–30 min). Calibrated on the published window (21–26 Oct), tested on 26 Oct – 18 Nov
+(7,299 forecasts of real crashes):
+
+| | Original ranges | Calibrated |
+|---|---|---|
+| Coverage (target 80%) | 61% | **79%** |
+| Median width | 7 s | 7 s |
+
+Narrower close to the crash, wider only 10–20 min ahead; the 20–30 min group reached 74%, not 80%, because errors far
+ahead differed between the two periods. The calibrated range is shown on the dashboard, in incident reasoning and as
+Prometheus metrics. Report: [`docs/results/calibration-memory-2026-11-18.md`](docs/results/calibration-memory-2026-11-18.md).
+
+### Debounced Job alerts
+
+Alerting only after **two "late" predictions in a row**, on 973 Jobs (26 Oct – 18 Nov):
+
+| | Plain forecast | Two in a row |
+|---|---|---|
+| On-time Jobs falsely flagged at least once | 250 of 452 (55%) | **192 of 452 (42%)** |
+| Warning before a missed deadline (median) | 218 s | 198 s |
+| Late Jobs missed | 2 of 521 | 2 of 521 |
+| Correct at 50% / 75% of the time | 87% / 92% | 88% / 92% |
+
+A quarter fewer false alarms at no cost in missed Jobs, but most false alarms persist across several decisions, so
+debouncing alone is not the fix. Report: [`docs/results/jobs-debounce-2026-11-18.md`](docs/results/jobs-debounce-2026-11-18.md).
 
 ---
 
@@ -298,12 +367,17 @@ backend/app/predictor/     memory_forecast.py                        - time-to-l
                            dashboard.py                              - read-only HTML dashboard
 backend/app/remediation/   watch.py, actions.py, verify.py           - incidents, safe execution, verification
                            experiment.py                             - treated vs control experiment
-backend/app/api/           predictor_routes.py                       - incidents, approval, remediation API
+backend/app/predictor/     calibrate.py                              - conformal calibration of ranges
+backend/app/metrics/       exporter.py                               - read-only Prometheus exporter
+backend/app/api/           predictor_routes.py, ui_routes.py         - incidents, approval API, /ui approval page
 backend/app/models/        database.py                               - tables
 backend/tests/             automated tests (conftest.py guards the real database)
 alembic/versions/          database migrations
 docs/testing/predict-lab/  test workloads with known behaviour
 docs/testing/remediate-lab/ the workload that remediation acts on (kept separate)
+docs/testing/pattern-lab/  realistic patterns: cycles, noise and spikes, steps
+docs/monitoring/           Prometheus/Grafana values, alert rules, dashboard
+scripts/                   setup-lab.sh, start.sh, stop.sh
 docs/results/              committed evaluation reports
 ```
 
@@ -336,9 +410,8 @@ docs/results/              committed evaluation reports
 
 ## What's next
 
-- One-command setup, so anyone can build the whole lab on a fresh machine.
-- Publish forecasts to Prometheus and Grafana, or run the system inside the cluster.
-- Other failure patterns; then low-risk automatic actions.
-- Test on workloads with daily patterns and changing growth, where Prophet could matter.
-- Calibrate prediction intervals.
-- Count distinct incidents and alert volume, as a production system would need.
+- Fix what the realistic workloads expose (for example, a longer look-back for cyclic memory), then re-test on new data.
+- Find the cause of persistent early Job alerts (probably start-up time counted as slow progress).
+- Calibrate the storage ranges as well.
+- Run the collector and watcher inside the cluster with a read-only service account, instead of on a laptop.
+- Count distinct incidents and alert volume, as a production system would need; then low-risk automatic actions.
