@@ -1,0 +1,64 @@
+{{- /*
+Database migrations, run by Helm as a hook:
+  post-install  - once the database exists (an init container waits until it accepts connections);
+  pre-upgrade   - before any new code starts, so it always meets an up-to-date schema.
+If the Job fails, the upgrade stops and the running version is left untouched.
+before-hook-creation keeps the last run (and its logs) until the next one replaces it.
+*/ -}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "fa.fullname" . }}-migrate
+  labels:
+    {{- include "fa.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migrations
+  annotations:
+    helm.sh/hook: post-install,pre-upgrade
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: {{ .Values.migrations.timeoutSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "fa.labels" . | nindent 8 }}
+        app.kubernetes.io/component: migrations
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: {type: RuntimeDefault}
+      initContainers:
+        - name: wait-for-database
+          image: {{ .Values.database.image | quote }}
+          imagePullPolicy: IfNotPresent
+          command: [sh, -c, 'until pg_isready -h {{ include "fa.dbName" . }} -p 5432; do echo waiting for the database; sleep 2; done']
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 999
+            capabilities: {drop: [ALL]}
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {memory: 64Mi}
+      containers:
+        - name: migrate
+          image: {{ include "fa.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: [alembic, upgrade, head]
+          env:
+            {{- include "fa.databaseEnv" . | nindent 12 }}
+          securityContext:
+            {{- include "fa.containerSecurity" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.migrations.resources | nindent 12 }}
+          volumeMounts:
+            # The root filesystem is read-only; Python and the libraries may still need a scratch directory.
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
