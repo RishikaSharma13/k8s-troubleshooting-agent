@@ -1,0 +1,17 @@
+# Headless Service (clusterIP: None): the StatefulSet's stable DNS name, <name>.<namespace>.svc, points straight
+# at the database pod. Components connect to it on port 5432.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "fa.dbName" . }}
+  labels:
+    {{- include "fa.labels" . | nindent 4 }}
+    app.kubernetes.io/component: database
+spec:
+  clusterIP: None
+  selector:
+    {{- include "fa.selectorLabels" (dict "root" . "component" "database") | nindent 4 }}
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres

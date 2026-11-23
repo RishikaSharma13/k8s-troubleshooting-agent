@@ -23,3 +23,14 @@ settings:
   remediationNamespace: remediate-lab
   # How often the collector reads metrics, in seconds.
   collectorIntervalSeconds: 15
+
+# PostgreSQL, run inside the release as a StatefulSet (one pod with its own persistent disk).
+database:
+  image: postgres:16.9-bookworm
+  name: k8s_agent
+  storage: 1Gi
+  # Empty: the cluster's default StorageClass (kind provides one).
+  storageClassName: ""
+  resources:
+    requests: {cpu: 100m, memory: 128Mi}
+    limits: {memory: 512Mi}

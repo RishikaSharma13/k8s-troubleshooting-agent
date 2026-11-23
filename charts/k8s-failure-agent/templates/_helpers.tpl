@@ -47,3 +47,8 @@ app.kubernetes.io/component: {{ .component }}
 {{- define "fa.image" -}}
 {{- printf "%s:%s" .Values.image.repository (default .Chart.AppVersion .Values.image.tag) }}
 {{- end }}
+
+{{/* The database's name inside the cluster: its Service, StatefulSet and Secret share it. */}}
+{{- define "fa.dbName" -}}
+{{- printf "%s-db" (include "fa.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}
