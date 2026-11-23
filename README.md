@@ -320,7 +320,7 @@ To remove the lab completely, deliberately, one command at a time:
 git clone git@github.com:RishikaSharma13/k8s-troubleshooting-agent.git
 cd k8s-troubleshooting-agent
 python3.10 -m venv venv && source venv/bin/activate
-pip install -r backend/requirements.txt
+pip install -r backend/requirements-dev.txt
 
 # Databases: one for data, one for tests only
 docker exec k8s-agent-db psql -U postgres -c "CREATE DATABASE k8s_agent"
