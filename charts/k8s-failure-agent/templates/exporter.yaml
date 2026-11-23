@@ -1,0 +1,85 @@
+# Exporter: read-only Prometheus metrics (GET /metrics and /health only). Database only: no API token.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "fa.componentName" (dict "root" . "component" "exporter") }}
+  labels:
+    {{- include "fa.labels" . | nindent 4 }}
+    app.kubernetes.io/component: exporter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "fa.selectorLabels" (dict "root" . "component" "exporter") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "fa.labels" . | nindent 8 }}
+        app.kubernetes.io/component: exporter
+    spec:
+      serviceAccountName: {{ include "fa.componentName" (dict "root" . "component" "exporter") }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "fa.podSecurity" . | nindent 8 }}
+      containers:
+        - name: exporter
+          image: {{ include "fa.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: [python, -m, app.metrics.exporter]
+          args:
+            - --host
+            - 0.0.0.0
+            - --port
+            - {{ .Values.exporter.port | quote }}
+            {{- include "fa.namespaceArgs" . | nindent 12 }}
+          {{- include "fa.appEnv" . | nindent 10 }}
+          ports:
+            - {name: metrics, containerPort: {{ .Values.exporter.port }}}
+          readinessProbe:
+            httpGet: {path: /health, port: metrics}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /health, port: metrics}
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          securityContext:
+            {{- include "fa.containerSecurity" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.exporter.resources | nindent 12 }}
+          volumeMounts: [{name: tmp, mountPath: /tmp}]
+      volumes: [{name: tmp, emptyDir: {}}]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "fa.componentName" (dict "root" . "component" "exporter") }}
+  labels:
+    {{- include "fa.labels" . | nindent 4 }}
+    app.kubernetes.io/component: exporter
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "fa.selectorLabels" (dict "root" . "component" "exporter") | nindent 4 }}
+  ports:
+    - {name: metrics, port: {{ .Values.exporter.port }}, targetPort: metrics}
+{{- if and .Values.serviceMonitor.enabled (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1/ServiceMonitor") }}
+---
+# Prometheus finds the exporter through this, with no hard-coded address.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "fa.componentName" (dict "root" . "component" "exporter") }}
+  labels:
+    {{- include "fa.labels" . | nindent 4 }}
+    {{- with .Values.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "fa.selectorLabels" (dict "root" . "component" "exporter") | nindent 6 }}
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: {{ .Values.serviceMonitor.interval }}
+{{- end }}

@@ -42,3 +42,47 @@ migrations:
   resources:
     requests: {cpu: 50m, memory: 128Mi}
     limits: {memory: 512Mi}
+
+# ---------------------------------------------------------------------------------------------------------
+# Components. Each runs as its own Deployment with its own ServiceAccount, holding only the permissions it needs.
+
+collector:
+  # Disk forecasts read kubelet statistics through the API server's node proxy (nodes/proxy, get). That is a
+  # powerful permission: the kubelet API can do more than report statistics. Set to false to drop it (and lose
+  # the disk signals); memory and Job collection keep working.
+  nodeStats: true
+  resources:
+    requests: {cpu: 50m, memory: 128Mi}
+    limits: {memory: 512Mi}
+
+watcher:
+  intervalSeconds: 60
+  resources:
+    requests: {cpu: 50m, memory: 256Mi}
+    limits: {memory: 1Gi}
+
+api:
+  port: 8000
+  resources:
+    requests: {cpu: 50m, memory: 256Mi}
+    limits: {memory: 1Gi}
+  # A sidecar container regenerates the dashboard the approval page shows, into a volume shared with the API.
+  dashboard:
+    intervalSeconds: 60
+    resources:
+      requests: {cpu: 50m, memory: 256Mi}
+      limits: {memory: 1Gi}
+
+exporter:
+  port: 9105
+  resources:
+    requests: {cpu: 20m, memory: 128Mi}
+    limits: {memory: 512Mi}
+
+# Prometheus discovers the exporter through a ServiceMonitor, created only when the cluster has the
+# Prometheus Operator's ServiceMonitor type. kube-prometheus-stack selects ServiceMonitors by its release label.
+serviceMonitor:
+  enabled: true
+  interval: 15s
+  labels:
+    release: monitoring

@@ -75,3 +75,33 @@ runAsGroup: 10001
 capabilities: {drop: [ALL]}
 seccompProfile: {type: RuntimeDefault}
 {{- end }}
+
+{{/* A component's name: "<fullname>-<component>". Call with (dict "root" $ "component" "collector"). */}}
+{{- define "fa.componentName" -}}
+{{- printf "%s-%s" (include "fa.fullname" .root) .component | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{/* Pod-level security settings shared by the application's pods. */}}
+{{- define "fa.podSecurity" -}}
+runAsNonRoot: true
+runAsUser: 10001
+runAsGroup: 10001
+fsGroup: 10001
+seccompProfile: {type: RuntimeDefault}
+{{- end }}
+
+{{/* Environment shared by the application's containers: settings and the database connection. */}}
+{{- define "fa.appEnv" -}}
+envFrom:
+  - configMapRef: {name: {{ include "fa.fullname" . }}-settings}
+env:
+  {{- include "fa.databaseEnv" . | nindent 2 }}
+{{- end }}
+
+{{/* "--namespace a --namespace b ..." for the components that take namespaces as arguments. */}}
+{{- define "fa.namespaceArgs" -}}
+{{- range .Values.settings.namespaces }}
+- --namespace
+- {{ . | quote }}
+{{- end }}
+{{- end }}
