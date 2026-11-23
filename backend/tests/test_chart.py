@@ -193,3 +193,11 @@ def test_components_and_services():
 def test_service_monitor_only_when_prometheus_operator_exists():
     assert by_kind(render(), "ServiceMonitor") == []
     assert len(by_kind(render(*SM), "ServiceMonitor")) == 1
+
+
+def test_all_digit_image_tag_stays_text():
+    """Seen on 23 Nov: --set image.tag=4764173 became a number and the image name became '%!s(int64=4764173)'."""
+    images = {c["image"] for d in render("--set", "image.tag=4764173") if d["kind"] in ("Deployment", "Job")
+              for c in d["spec"]["template"]["spec"]["containers"]}
+    assert images == {"k8s-failure-agent:4764173"}, images
+    assert not any("%!" in d for d in render_text("--set", "image.tag=0000001").splitlines())
