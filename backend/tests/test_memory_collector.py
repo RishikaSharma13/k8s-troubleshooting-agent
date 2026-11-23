@@ -194,3 +194,22 @@ class TestStorage(unittest.TestCase):
         self.assertEqual((first.inserted, first.duplicates), (1, 0))
         self.assertEqual((second.inserted, second.duplicates), (0, 1))
         self.assertEqual(self._count(), 1)
+
+
+def test_finished_pods_are_counted_not_listed():
+    """Seen on 23 Nov: hundreds of evicted and completed pods were listed by name on every cycle."""
+    from app.collector.memory_collector import build_samples, summarize_skipped
+    pods = {"items": [
+        {"metadata": {"name": "app-1", "ownerReferences": []}, "status": {"phase": "Running"},
+         "spec": {"containers": [{"name": "c", "resources": {"limits": {"memory": "256Mi"}}}]}},
+        {"metadata": {"name": "app-2"}, "status": {"phase": "Running"}, "spec": {"containers": [{"name": "c"}]}},
+        {"metadata": {"name": "disk-leak-x"}, "status": {"phase": "Failed", "reason": "Evicted"}, "spec": {"containers": [{"name": "c"}]}},
+        {"metadata": {"name": "deadline-job-y"}, "status": {"phase": "Succeeded"}, "spec": {"containers": [{"name": "c"}]}},
+    ]}
+    metrics = {"items": [{"metadata": {"name": "app-1"}, "timestamp": "2026-11-23T09:00:00Z", "window": "15s",
+                          "containers": [{"name": "c", "usage": {"memory": "100Mi"}}]}]}
+    samples, skipped = build_samples("ns", metrics, pods)
+    assert len(samples) == 1
+    assert dict(skipped) == {"app-2": "no_metrics", "disk-leak-x": "finished", "deadline-job-y": "finished"}
+    listed, finished = summarize_skipped(skipped)
+    assert listed == [("app-2", "no_metrics")] and finished == 2       # a running pod without metrics still stands out
