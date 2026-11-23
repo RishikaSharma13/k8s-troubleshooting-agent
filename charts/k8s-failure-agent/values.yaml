@@ -34,3 +34,11 @@ database:
   resources:
     requests: {cpu: 100m, memory: 128Mi}
     limits: {memory: 512Mi}
+
+# Database migrations (alembic upgrade head), run by Helm as a hook: after install, and before every upgrade.
+migrations:
+  # Give up after this many seconds, so a stuck migration fails the upgrade instead of hanging it.
+  timeoutSeconds: 300
+  resources:
+    requests: {cpu: 50m, memory: 128Mi}
+    limits: {memory: 512Mi}

@@ -52,3 +52,26 @@ app.kubernetes.io/component: {{ .component }}
 {{- define "fa.dbName" -}}
 {{- printf "%s-db" (include "fa.fullname" .) | trunc 63 | trimSuffix "-" }}
 {{- end }}
+
+{{/*
+Environment for any container that talks to the database. The password comes from the Secret, and Kubernetes
+expands $(DB_PASSWORD) inside the pod, so the password never appears in the chart, the values or the release.
+*/}}
+{{- define "fa.databaseEnv" -}}
+- name: DB_PASSWORD
+  valueFrom:
+    secretKeyRef: {name: {{ include "fa.dbName" . }}, key: password}
+- name: DATABASE_URL
+  value: "postgresql://postgres:$(DB_PASSWORD)@{{ include "fa.dbName" . }}:5432/{{ .Values.database.name }}"
+{{- end }}
+
+{{/* Container security settings shared by the application's containers (image user 10001). */}}
+{{- define "fa.containerSecurity" -}}
+allowPrivilegeEscalation: false
+readOnlyRootFilesystem: true
+runAsNonRoot: true
+runAsUser: 10001
+runAsGroup: 10001
+capabilities: {drop: [ALL]}
+seccompProfile: {type: RuntimeDefault}
+{{- end }}

@@ -98,3 +98,34 @@ def test_valid_kubernetes_1_34_objects():
     r = subprocess.run(["kubeconform", "-strict", "-summary", "-kubernetes-version", "1.34.0", "-"],
                        input=render_text(), capture_output=True, text=True)
     assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_migrations_run_as_a_hook_before_upgrades_and_after_install():
+    job = by_kind(render(), "Job")[0]
+    ann = job["metadata"]["annotations"]
+    assert set(ann["helm.sh/hook"].split(",")) == {"post-install", "pre-upgrade"}
+    assert ann["helm.sh/hook-delete-policy"] == "before-hook-creation"       # keeps the last run's logs
+    pod = job["spec"]["template"]["spec"]
+    assert pod["containers"][0]["command"] == ["alembic", "upgrade", "head"]
+    assert "pg_isready" in " ".join(pod["initContainers"][0]["command"])       # waits for the database
+    assert job["spec"]["activeDeadlineSeconds"] == 300 and pod["restartPolicy"] == "Never"
+
+
+def test_migration_container_is_locked_down():
+    pod = by_kind(render(), "Job")[0]["spec"]["template"]["spec"]
+    sec = pod["containers"][0]["securityContext"]
+    assert pod["automountServiceAccountToken"] is False
+    assert sec["readOnlyRootFilesystem"] is True and sec["runAsNonRoot"] is True and sec["capabilities"]["drop"] == ["ALL"]
+    assert sec["allowPrivilegeEscalation"] is False
+
+
+def test_password_appears_only_in_its_secret():
+    """The connection string is built in the pod from $(DB_PASSWORD); the password itself never leaves the Secret."""
+    import base64
+    text = render_text()
+    docs = [d for d in yaml.safe_load_all(text) if d]
+    password = base64.b64decode(by_kind(docs, "Secret")[0]["data"]["password"]).decode()
+    others = [d for d in docs if d["kind"] != "Secret"]
+    assert password not in yaml.safe_dump_all(others)
+    env = {e["name"]: e for e in by_kind(docs, "Job")[0]["spec"]["template"]["spec"]["containers"][0]["env"]}
+    assert "$(DB_PASSWORD)" in env["DATABASE_URL"]["value"] and "secretKeyRef" in env["DB_PASSWORD"]["valueFrom"]
