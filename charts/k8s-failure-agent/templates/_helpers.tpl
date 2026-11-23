@@ -43,9 +43,13 @@ app.kubernetes.io/instance: {{ .root.Release.Name }}
 app.kubernetes.io/component: {{ .component }}
 {{- end }}
 
-{{/* The image reference: repository:tag, the tag defaulting to the chart's appVersion. */}}
+{{/*
+The image reference: repository:tag, the tag defaulting to the chart's appVersion.
+toString: `--set image.tag=4764173` (an all-digit commit id) arrives as a number, and printf "%s" would print
+"%!s(int64=4764173)" into the image name (seen on 23 Nov: the migration hook could not start and the upgrade failed).
+*/}}
 {{- define "fa.image" -}}
-{{- printf "%s:%s" .Values.image.repository (default .Chart.AppVersion .Values.image.tag) }}
+{{- printf "%s:%s" (toString .Values.image.repository) (toString (default .Chart.AppVersion .Values.image.tag)) }}
 {{- end }}
 
 {{/* The database's name inside the cluster: its Service, StatefulSet and Secret share it. */}}
