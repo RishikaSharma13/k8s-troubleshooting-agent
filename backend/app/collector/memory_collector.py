@@ -183,10 +183,19 @@ def build_samples(
                 memory_bytes=memory_bytes, memory_limit_bytes=limits.get(c.get("name", "")),
             ))
 
-    for name in pods_by_name:
+    for name, pod in pods_by_name.items():
         if name not in seen:
-            skipped.append((name, "no_metrics"))
+            # Finished pods (evicted, completed Jobs) never have metrics; Kubernetes keeps them for inspection,
+            # so they pile up. They are counted, not listed; a *running* pod without metrics is still listed.
+            phase = (pod.get("status") or {}).get("phase")
+            skipped.append((name, "finished" if phase in ("Succeeded", "Failed") else "no_metrics"))
     return samples, skipped
+
+
+def summarize_skipped(skipped: list) -> tuple[list, int]:
+    """(skipped entries worth listing, number of finished pods) for the log line."""
+    finished = sum(1 for _, reason in skipped if reason == "finished")
+    return [s for s in skipped if s[1] != "finished"], finished
 
 
 def build_terminations(namespace: str, pods: dict[str, Any]) -> list[TerminationRecord]:
@@ -338,7 +347,8 @@ class MemoryCollector:
             logger.error("Storing samples failed for {}: {}", namespace, exc)
             return result
         result.duplicates = result.samples_found - result.inserted
-        logger.info("Collected {}: found={} inserted={} duplicates={} skipped={} terminations_new={}",
-                    namespace, result.samples_found, result.inserted, result.duplicates, result.skipped,
+        listed, finished = summarize_skipped(result.skipped)
+        logger.info("Collected {}: found={} inserted={} duplicates={} skipped={} finished_pods={} terminations_new={}",
+                    namespace, result.samples_found, result.inserted, result.duplicates, listed, finished,
                     result.terminations_inserted)
         return result
