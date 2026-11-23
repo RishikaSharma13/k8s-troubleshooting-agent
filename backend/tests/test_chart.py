@@ -35,7 +35,8 @@ def test_settings_from_values_and_standard_labels():
 
 
 def test_overrides_and_naming_rules():
-    cm = by_kind(render("--set", "settings.namespaces={predict-lab}", "--set", "settings.collectorIntervalSeconds=30"), "ConfigMap")[0]
+    cm = by_kind(render("--set", "settings.namespaces={predict-lab}", "--set", "settings.remediationNamespace=predict-lab",
+                        "--set", "settings.collectorIntervalSeconds=30"), "ConfigMap")[0]
     assert (cm["data"]["NAMESPACES"], cm["data"]["COLLECTOR_INTERVAL_SECONDS"]) == ("predict-lab", "30")
     assert by_kind(render(release="k8s-failure-agent"), "ConfigMap")[0]["metadata"]["name"] == "k8s-failure-agent-settings"
     assert by_kind(render("--set", "fullnameOverride=agent"), "ConfigMap")[0]["metadata"]["name"] == "agent-settings"
@@ -201,3 +202,55 @@ def test_all_digit_image_tag_stays_text():
               for c in d["spec"]["template"]["spec"]["containers"]}
     assert images == {"k8s-failure-agent:4764173"}, images
     assert not any("%!" in d for d in render_text("--set", "image.tag=0000001").splitlines())
+
+
+@pytest.mark.parametrize("value, message", [
+    ("collecter.nodeStats=false", "additional properties 'collecter'"),      # a typo is an error, not silently ignored
+    ("collector.nodeStats=maybe", "want boolean"),
+    ("image.pullPolicy=sometimes", "must be one of"),
+    ("database.image=postgres", "does not match pattern"),                    # no tag: the 'latest' trap
+    ("database.image=postgres:latest", "'not' failed"),
+    ("api.port=0", "minimum"),
+    ("settings.remediationNamespace=default", "must be one of settings.namespaces"),
+])
+def test_bad_values_are_rejected_before_rendering(value, message):
+    r = subprocess.run(["helm", "template", "demo", str(CHART), "--set", value], capture_output=True, text=True)
+    assert r.returncode != 0 and message in r.stderr, r.stderr
+
+
+def test_numeric_tag_is_still_accepted():
+    assert render("--set", "image.tag=4764173")
+
+
+def _run_test_pod_script(metrics_body):
+    """Run the chart's helm-test script against local stand-ins for the API and the exporter."""
+    import http.server, threading
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = (b"ok\n" if self.path == "/health" else metrics_body if self.path == "/metrics" else b"")
+            self.send_response(200 if body else 404); self.end_headers(); self.wfile.write(body)
+        def log_message(self, *a): pass
+    servers = [http.server.ThreadingHTTPServer(("127.0.0.1", 0), H) for _ in range(2)]
+    for s in servers:
+        threading.Thread(target=s.serve_forever, daemon=True).start()
+    try:
+        pod = next(d for d in render() if d["metadata"]["name"].endswith("test-endpoints"))
+        script = pod["spec"]["containers"][0]["args"][0]
+        script = (script.replace("demo-k8s-failure-agent-api:8000", f"127.0.0.1:{servers[0].server_address[1]}")
+                        .replace("demo-k8s-failure-agent-exporter:9105", f"127.0.0.1:{servers[1].server_address[1]}"))
+        return subprocess.run(["python3", "-c", script], capture_output=True, text=True, timeout=30)
+    finally:
+        for s in servers:
+            s.shutdown()
+
+
+def test_helm_test_pod_passes_on_a_working_release():
+    pod = next(d for d in render() if d["metadata"]["name"].endswith("test-endpoints"))
+    assert pod["metadata"]["annotations"]["helm.sh/hook"] == "test"
+    r = _run_test_pod_script(b"# HELP k8s_failure_incidents x\nk8s_failure_incidents{outcome=\"AVOIDED\"} 18\n")
+    assert r.returncode == 0 and r.stdout.count("PASS") == 3, r.stdout
+
+
+def test_helm_test_pod_fails_when_metrics_are_missing():
+    r = _run_test_pod_script(b"# nothing useful here\n")
+    assert r.returncode == 1 and "FAIL exporter /metrics" in r.stdout, r.stdout
