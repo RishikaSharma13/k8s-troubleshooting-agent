@@ -1,0 +1,6 @@
+# Files Helm leaves out when packaging the chart.
+.git/
+*.swp
+*.bak
+*.tmp
+.DS_Store
