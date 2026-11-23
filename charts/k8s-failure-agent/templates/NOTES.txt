@@ -2,6 +2,15 @@
 
 Image: {{ include "fa.image" . }}
 Watching namespaces: {{ join ", " .Values.settings.namespaces }}
+Incidents and approved actions: namespace {{ .Values.settings.remediationNamespace }}
 
-This is the chart skeleton: the components are added in the next steps.
-See every resource with:  kubectl -n {{ .Release.Namespace }} get all -l app.kubernetes.io/instance={{ .Release.Name }}
+Open the approval page (the API is only reachable inside the cluster):
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "fa.componentName" (dict "root" . "component" "api") }} 8080:{{ .Values.api.port }}
+  then http://127.0.0.1:8080/ui
+
+See every component:
+  kubectl -n {{ .Release.Namespace }} get pods -l app.kubernetes.io/instance={{ .Release.Name }}
+{{- if not (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1/ServiceMonitor") }}
+
+Prometheus Operator not found: no ServiceMonitor was created for the exporter.
+{{- end }}

@@ -1,0 +1,37 @@
+# Watcher: forecasts each workload, raises incidents and verifies their outcomes. Database only: no API token.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "fa.componentName" (dict "root" . "component" "watcher") }}
+  labels:
+    {{- include "fa.labels" . | nindent 4 }}
+    app.kubernetes.io/component: watcher
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels:
+      {{- include "fa.selectorLabels" (dict "root" . "component" "watcher") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "fa.labels" . | nindent 8 }}
+        app.kubernetes.io/component: watcher
+    spec:
+      serviceAccountName: {{ include "fa.componentName" (dict "root" . "component" "watcher") }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "fa.podSecurity" . | nindent 8 }}
+      containers:
+        - name: watcher
+          image: {{ include "fa.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: [python, -m, app.remediation.watch]
+          args: [--namespace, {{ .Values.settings.remediationNamespace | quote }}, --interval, {{ .Values.watcher.intervalSeconds | quote }}]
+          {{- include "fa.appEnv" . | nindent 10 }}
+          securityContext:
+            {{- include "fa.containerSecurity" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.watcher.resources | nindent 12 }}
+          volumeMounts: [{name: tmp, mountPath: /tmp}]
+      volumes: [{name: tmp, emptyDir: {}}]

@@ -1,0 +1,117 @@
+{{- /*
+Least privilege, matched to the commands each component runs.
+
+Collector, in each watched namespace (a Role there, not cluster-wide): read pods, Jobs and pod metrics.
+Collector, cluster-wide and optional (collector.nodeStats): read kubelet statistics through nodes/proxy.
+API (the executor), only in the remediation namespace: read and patch Deployments (restart, memory limit), read
+pods and ReplicaSets (rollout status); and read that one namespace's labels (the allow-list check).
+Nothing else: no secrets, no create or delete, no wildcards.
+*/ -}}
+{{- $root := . }}
+{{- $collector := include "fa.componentName" (dict "root" . "component" "collector") }}
+{{- $api := include "fa.componentName" (dict "root" . "component" "api") }}
+{{- range .Values.settings.namespaces }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $collector }}
+  namespace: {{ . }}
+  labels:
+    {{- include "fa.labels" $root | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list]
+  - apiGroups: [batch]
+    resources: [jobs]
+    verbs: [get, list]
+  - apiGroups: [metrics.k8s.io]
+    resources: [pods]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $collector }}
+  namespace: {{ . }}
+  labels:
+    {{- include "fa.labels" $root | nindent 4 }}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: {{ $collector }}}
+subjects:
+  - {kind: ServiceAccount, name: {{ $collector }}, namespace: {{ $root.Release.Namespace }}}
+{{- end }}
+{{- if .Values.collector.nodeStats }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ printf "%s-%s-node-stats" .Release.Namespace $collector | trunc 63 | trimSuffix "-" }}
+  labels:
+    {{- include "fa.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [nodes/proxy]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ printf "%s-%s-node-stats" .Release.Namespace $collector | trunc 63 | trimSuffix "-" }}
+  labels:
+    {{- include "fa.labels" . | nindent 4 }}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: {{ printf "%s-%s-node-stats" .Release.Namespace $collector | trunc 63 | trimSuffix "-" }}}
+subjects:
+  - {kind: ServiceAccount, name: {{ $collector }}, namespace: {{ .Release.Namespace }}}
+{{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $api }}
+  namespace: {{ .Values.settings.remediationNamespace }}
+  labels:
+    {{- include "fa.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [get, list, watch, patch]
+  - apiGroups: [apps]
+    resources: [replicasets]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $api }}
+  namespace: {{ .Values.settings.remediationNamespace }}
+  labels:
+    {{- include "fa.labels" . | nindent 4 }}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: {{ $api }}}
+subjects:
+  - {kind: ServiceAccount, name: {{ $api }}, namespace: {{ .Release.Namespace }}}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ printf "%s-%s-read-namespace" .Release.Namespace $api | trunc 63 | trimSuffix "-" }}
+  labels:
+    {{- include "fa.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [namespaces]
+    resourceNames: [{{ .Values.settings.remediationNamespace | quote }}]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ printf "%s-%s-read-namespace" .Release.Namespace $api | trunc 63 | trimSuffix "-" }}
+  labels:
+    {{- include "fa.labels" . | nindent 4 }}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: {{ printf "%s-%s-read-namespace" .Release.Namespace $api | trunc 63 | trimSuffix "-" }}}
+subjects:
+  - {kind: ServiceAccount, name: {{ $api }}, namespace: {{ .Release.Namespace }}}

@@ -88,7 +88,7 @@ def test_database_statefulset_is_pinned_non_root_and_persistent():
     assert sts["spec"]["volumeClaimTemplates"][0]["spec"]["resources"]["requests"]["storage"] == "1Gi"
     sel = sts["spec"]["selector"]["matchLabels"]
     assert sel.items() <= sts["spec"]["template"]["metadata"]["labels"].items()   # the pod matches its selector
-    svc = by_kind(render(), "Service")[0]
+    svc = next(d for d in by_kind(render(), "Service") if d["metadata"]["labels"]["app.kubernetes.io/component"] == "database")
     assert svc["spec"]["clusterIP"] == "None" and svc["spec"]["selector"] == sel
 
 
@@ -129,3 +129,67 @@ def test_password_appears_only_in_its_secret():
     assert password not in yaml.safe_dump_all(others)
     env = {e["name"]: e for e in by_kind(docs, "Job")[0]["spec"]["template"]["spec"]["containers"][0]["env"]}
     assert "$(DB_PASSWORD)" in env["DATABASE_URL"]["value"] and "secretKeyRef" in env["DB_PASSWORD"]["valueFrom"]
+
+
+SM = ("--api-versions", "monitoring.coreos.com/v1/ServiceMonitor")
+
+
+def _deployments(docs):
+    return {d["metadata"]["labels"]["app.kubernetes.io/component"]: d for d in by_kind(docs, "Deployment")}
+
+
+def test_only_the_collector_and_api_get_an_api_token():
+    docs = render()
+    sas = {d["metadata"]["labels"]["app.kubernetes.io/component"]: d["automountServiceAccountToken"] for d in by_kind(docs, "ServiceAccount")}
+    assert sas == {"collector": True, "api": True, "watcher": False, "exporter": False}
+    deps = _deployments(docs)
+    for name in ("watcher", "exporter"):
+        assert deps[name]["spec"]["template"]["spec"]["automountServiceAccountToken"] is False
+
+
+def test_rbac_is_least_privilege():
+    docs = render()
+    rules = [(d["kind"], d["metadata"].get("namespace"), r) for d in docs if d["kind"] in ("Role", "ClusterRole") for r in d["rules"]]
+    for kind, ns, r in rules:
+        assert "*" not in r["verbs"] and "*" not in r["resources"] and "*" not in r["apiGroups"], r
+        assert "secrets" not in r["resources"], r
+        assert not set(r["verbs"]) & {"create", "delete", "deletecollection", "update", "escalate", "bind", "impersonate"}, r
+    writers = [(kind, ns, r["resources"]) for kind, ns, r in rules if "patch" in r["verbs"]]
+    assert writers == [("Role", "remediate-lab", ["deployments"])]           # the only write: patch, there, deployments
+    collector_ns = sorted(d["metadata"]["namespace"] for d in by_kind(docs, "Role") if d["metadata"]["name"].endswith("-collector"))
+    assert collector_ns == ["pattern-lab", "predict-lab", "remediate-lab"]
+    cluster = {r["resources"][0]: r for d in by_kind(docs, "ClusterRole") for r in d["rules"]}
+    assert cluster["nodes/proxy"]["verbs"] == ["get"]
+    assert cluster["namespaces"]["resourceNames"] == ["remediate-lab"] and cluster["namespaces"]["verbs"] == ["get"]
+
+
+def test_node_stats_permission_can_be_turned_off():
+    cluster = [r["resources"][0] for d in by_kind(render("--set", "collector.nodeStats=false"), "ClusterRole") for r in d["rules"]]
+    assert cluster == ["namespaces"]
+
+
+def test_every_container_is_locked_down():
+    for d in by_kind(render(), "Deployment"):
+        pod = d["spec"]["template"]["spec"]
+        assert pod["securityContext"]["runAsNonRoot"] is True
+        for c in pod["containers"]:
+            s = c["securityContext"]
+            assert s["readOnlyRootFilesystem"] is True and s["allowPrivilegeEscalation"] is False
+            assert s["capabilities"]["drop"] == ["ALL"], (d["metadata"]["name"], c["name"])
+
+
+def test_components_and_services():
+    docs = render(*SM)
+    deps = _deployments(docs)
+    assert set(deps) == {"collector", "watcher", "api", "exporter"}
+    args = deps["collector"]["spec"]["template"]["spec"]["containers"][0]["args"]
+    assert [args[i + 1] for i, a in enumerate(args) if a == "--namespace"] == ["predict-lab", "remediate-lab", "pattern-lab"]
+    assert [c["name"] for c in deps["api"]["spec"]["template"]["spec"]["containers"]] == ["api", "dashboard"]
+    assert all(s["spec"].get("type", "ClusterIP") == "ClusterIP" for s in by_kind(docs, "Service"))   # nothing exposed outside
+    sm = by_kind(docs, "ServiceMonitor")[0]
+    assert sm["metadata"]["labels"]["release"] == "monitoring" and sm["spec"]["endpoints"][0]["port"] == "metrics"
+
+
+def test_service_monitor_only_when_prometheus_operator_exists():
+    assert by_kind(render(), "ServiceMonitor") == []
+    assert len(by_kind(render(*SM), "ServiceMonitor")) == 1

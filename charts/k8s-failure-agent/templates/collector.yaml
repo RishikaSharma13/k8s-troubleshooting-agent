@@ -1,0 +1,40 @@
+# Collector: reads memory, disk and Job progress every few seconds and stores them, with every failure.
+# Recreate: never two collectors at once during an upgrade.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "fa.componentName" (dict "root" . "component" "collector") }}
+  labels:
+    {{- include "fa.labels" . | nindent 4 }}
+    app.kubernetes.io/component: collector
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels:
+      {{- include "fa.selectorLabels" (dict "root" . "component" "collector") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "fa.labels" . | nindent 8 }}
+        app.kubernetes.io/component: collector
+    spec:
+      serviceAccountName: {{ include "fa.componentName" (dict "root" . "component" "collector") }}
+      securityContext:
+        {{- include "fa.podSecurity" . | nindent 8 }}
+      containers:
+        - name: collector
+          image: {{ include "fa.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: [python, -m, app.collector.run]
+          args:
+            {{- include "fa.namespaceArgs" . | nindent 12 }}
+            - --interval
+            - "$(COLLECTOR_INTERVAL_SECONDS)"
+          {{- include "fa.appEnv" . | nindent 10 }}
+          securityContext:
+            {{- include "fa.containerSecurity" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.collector.resources | nindent 12 }}
+          volumeMounts: [{name: tmp, mountPath: /tmp}]
+      volumes: [{name: tmp, emptyDir: {}}]
