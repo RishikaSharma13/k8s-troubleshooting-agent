@@ -1,0 +1,52 @@
+{{- /*
+`helm test <release>` runs this pod (never on install). It checks, from inside the cluster, that the API and the
+exporter answer, and that /metrics really carries forecast metrics. Uses the application's own image (Python).
+*/ -}}
+{{- $api := include "fa.componentName" (dict "root" . "component" "api") }}
+{{- $exporter := include "fa.componentName" (dict "root" . "component" "exporter") }}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "fa.fullname" . }}-test-endpoints
+  labels:
+    {{- include "fa.labels" . | nindent 4 }}
+    app.kubernetes.io/component: test
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  securityContext:
+    {{- include "fa.podSecurity" . | nindent 4 }}
+  containers:
+    - name: check
+      image: {{ include "fa.image" . | quote }}
+      imagePullPolicy: {{ .Values.image.pullPolicy }}
+      command: [python, -c]
+      args:
+        - |
+          import sys, urllib.request
+          def get(url):
+              with urllib.request.urlopen(url, timeout=10) as r:
+                  return r.status, r.read().decode()
+          checks = [
+              ("API /health", "http://{{ $api }}:{{ .Values.api.port }}/health", None),
+              ("exporter /health", "http://{{ $exporter }}:{{ .Values.exporter.port }}/health", None),
+              ("exporter /metrics", "http://{{ $exporter }}:{{ .Values.exporter.port }}/metrics", "k8s_failure_"),
+          ]
+          failed = 0
+          for name, url, needle in checks:
+              try:
+                  status, body = get(url)
+                  ok = status == 200 and (needle is None or needle in body)
+              except Exception as exc:
+                  ok, status = False, exc
+              print(("PASS " if ok else "FAIL ") + name + ": " + str(status))
+              failed += not ok
+          sys.exit(1 if failed else 0)
+      securityContext:
+        {{- include "fa.containerSecurity" . | nindent 8 }}
+      resources:
+        requests: {cpu: 10m, memory: 64Mi}
+        limits: {memory: 128Mi}

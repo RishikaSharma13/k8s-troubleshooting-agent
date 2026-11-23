@@ -1,3 +1,7 @@
+{{- /* A rule JSON Schema cannot express: incidents are raised only where data is collected. */ -}}
+{{- if not (has .Values.settings.remediationNamespace .Values.settings.namespaces) }}
+{{- fail (printf "settings.remediationNamespace %q must be one of settings.namespaces %v" .Values.settings.remediationNamespace .Values.settings.namespaces) }}
+{{- end }}
 # Settings shared by the components. Each pod reads them as environment variables (envFrom).
 apiVersion: v1
 kind: ConfigMap
