@@ -80,8 +80,8 @@ done
 
 say "5/7 Python environment and database schema"
 if [ -x "$VENV/bin/python" ]; then skip "virtual environment $VENV"
-elif todo "create $VENV and install backend/requirements.txt (several minutes)"; then
-  python3 -m venv "$VENV" && "$VENV/bin/pip" install -q -r backend/requirements.txt || fail "pip install failed"
+elif todo "create $VENV and install backend/requirements-dev.txt (several minutes)"; then
+  python3 -m venv "$VENV" && "$VENV/bin/pip" install -q -r backend/requirements-dev.txt || fail "pip install failed"
 fi
 if todo "apply database migrations (no-op when up to date)"; then
   for db in k8s_agent k8s_agent_test; do
@@ -109,6 +109,7 @@ elif todo "install kube-prometheus-stack (version >= 14 days old), alert rules a
   helm repo add prometheus-community https://prometheus-community.github.io/helm-charts >/dev/null 2>&1
   helm repo update prometheus-community >/dev/null || fail "helm repo update failed"
   V="$("$VENV/bin/python" docs/monitoring/pick_chart_version.py)" || fail "could not pick a chart version"
+  [[ "$V" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "unexpected chart version '$V': refusing to install an unpinned chart"
   pw="$HOME/.k8s-failure-lab-grafana-admin"; ( umask 077; openssl rand -base64 18 > "$pw" )
   helm install monitoring prometheus-community/kube-prometheus-stack --version "$V" -n monitoring --create-namespace \
     -f docs/monitoring/kube-prometheus-stack-values.yaml --set grafana.adminPassword="$(cat "$pw")" \

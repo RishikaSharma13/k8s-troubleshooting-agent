@@ -28,8 +28,19 @@ esac
 '''
 
 
-def run(tmp_path, state, *args, tools=("docker", "kind", "kubectl", "helm", "openssl")):
+BASIC = ("bash", "sed", "seq", "sleep", "grep", "cat", "dirname", "basename", "head", "touch", "date", "tr", "python3")
+
+
+def run(tmp_path, state, *args, tools=("docker", "kind", "kubectl", "helm", "openssl", "curl")):
+    """Run the script with a SEALED search path: stand-ins for every cluster or network tool, plus a few basic
+    utilities linked one by one. Never all of /usr/bin, where a real helm or kubectl could be found and run
+    against a real cluster (seen on 23 Nov: a real helm on the developer's machine)."""
     bin_ = tmp_path / "bin"; bin_.mkdir(exist_ok=True)
+    sysbin = tmp_path / "sysbin"; sysbin.mkdir(exist_ok=True)
+    for b in BASIC:
+        real = shutil.which(b)
+        if real and not (sysbin / b).exists():
+            (sysbin / b).symlink_to(real)
     for t in tools:
         (bin_ / t).write_text(STUB); (bin_ / t).chmod(0o755)
     venv = tmp_path / "venv" / "bin"; venv.mkdir(parents=True, exist_ok=True)
@@ -37,7 +48,7 @@ def run(tmp_path, state, *args, tools=("docker", "kind", "kubectl", "helm", "ope
     log = tmp_path / "calls.log"
     for f in [log, *tmp_path.glob("calls.log.*")]:
         f.unlink(missing_ok=True)
-    env = {**os.environ, "PATH": f"{bin_}:/usr/bin:/bin", "STUB_LOG": str(log), "STUB_STATE": state,
+    env = {**os.environ, "PATH": f"{bin_}:{sysbin}", "STUB_LOG": str(log), "STUB_STATE": state,
            "VENV": str(tmp_path / "venv"), "START": "0", "HOME": str(tmp_path)}
     r = subprocess.run(["bash", str(SCRIPT), *args], env=env, capture_output=True, text=True, timeout=60)
     return r, (log.read_text() if log.exists() else "")
@@ -76,7 +87,7 @@ def test_empty_machine_is_built_in_order(tmp_path):
 
 
 def test_missing_tool_is_reported_before_anything_runs(tmp_path):
-    r, calls = run(tmp_path, "empty", "--with-monitoring", tools=("docker", "kind", "kubectl"))
+    r, calls = run(tmp_path, "empty", "--with-monitoring", tools=("docker", "kind", "kubectl", "curl"))
     assert r.returncode == 1 and "missing: helm" in r.stdout
     assert calls == ""                                           # stopped before touching anything
 
@@ -86,3 +97,18 @@ def test_stop_script_only_stops_services():
     assert subprocess.run(["bash", "-n", str(REPO / "scripts" / "stop.sh")]).returncode == 0
     for destructive in ("kind delete", "docker rm", "volume rm", "DROP DATABASE", "helm uninstall"):
         assert destructive not in text
+
+
+def test_sealed_path_cannot_reach_real_tools(tmp_path):
+    """Even where helm and kubectl are installed for real, the tests can only ever call stand-ins."""
+    r, calls = run(tmp_path, "exists", "--check")
+    env_path = f"{tmp_path / 'bin'}:{tmp_path / 'sysbin'}"
+    found = subprocess.run(["bash", "-c", "command -v helm kubectl kind docker"], env={"PATH": env_path},
+                           capture_output=True, text=True).stdout.split()
+    assert found and all(f.startswith(str(tmp_path / "bin")) for f in found), found
+
+
+def test_empty_chart_version_is_refused_before_helm_install(tmp_path):
+    r, calls = run(tmp_path, "empty", "--with-monitoring")   # the stand-in python prints no version
+    assert r.returncode == 1 and "refusing to install an unpinned chart" in r.stdout
+    assert "helm install" not in calls

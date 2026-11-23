@@ -1,0 +1,11 @@
+# Allow-list: send only what the image needs to the build (no venv, .git, secrets, frontend, node_modules).
+*
+!Dockerfile
+!alembic.ini
+!alembic/
+!backend/requirements.txt
+!backend/app/
+!docs/results/
+**/__pycache__
+**/*.pyc
+**/.env
