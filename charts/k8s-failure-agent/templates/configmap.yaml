@@ -1,0 +1,12 @@
+# Settings shared by the components. Each pod reads them as environment variables (envFrom).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "fa.fullname" . }}-settings
+  labels:
+    {{- include "fa.labels" . | nindent 4 }}
+data:
+  NAMESPACES: {{ join "," .Values.settings.namespaces | quote }}
+  REMEDIATION_NAMESPACE: {{ .Values.settings.remediationNamespace | quote }}
+  COLLECTOR_INTERVAL_SECONDS: {{ .Values.settings.collectorIntervalSeconds | quote }}
+  PYTHONPATH: "/app/backend"

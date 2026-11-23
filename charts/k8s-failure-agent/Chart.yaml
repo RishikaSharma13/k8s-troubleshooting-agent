@@ -1,0 +1,14 @@
+# The chart's identity. `version` is the chart's own version (bump it whenever the chart changes);
+# `appVersion` is the version of the application it deploys (the image tag, by default).
+apiVersion: v2
+name: k8s-failure-agent
+description: Kubernetes failure prediction, human-approved remediation and verification
+type: application
+version: 0.1.0
+appVersion: "dev"
+kubeVersion: ">=1.29.0-0"
+home: https://github.com/RishikaSharma13/k8s-troubleshooting-agent
+sources:
+  - https://github.com/RishikaSharma13/k8s-troubleshooting-agent
+maintainers:
+  - name: Rishika Sharma

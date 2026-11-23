@@ -1,0 +1,7 @@
+{{ include "fa.fullname" . }} is installed in namespace {{ .Release.Namespace }} (revision {{ .Release.Revision }}).
+
+Image: {{ include "fa.image" . }}
+Watching namespaces: {{ join ", " .Values.settings.namespaces }}
+
+This is the chart skeleton: the components are added in the next steps.
+See every resource with:  kubectl -n {{ .Release.Namespace }} get all -l app.kubernetes.io/instance={{ .Release.Name }}

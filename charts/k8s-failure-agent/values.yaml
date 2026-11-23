@@ -1,0 +1,25 @@
+# Default settings for the chart. Override any of them with -f my-values.yaml or --set key=value.
+
+# The container image (built from the repository's Dockerfile).
+image:
+  repository: k8s-failure-agent
+  # Empty means "use the chart's appVersion" (see Chart.yaml).
+  tag: ""
+  # IfNotPresent: use the image already loaded into the cluster (kind load docker-image); don't pull it.
+  pullPolicy: IfNotPresent
+
+# Rename everything this release creates (rarely needed).
+nameOverride: ""
+fullnameOverride: ""
+
+# Settings shared by the components, published in a ConfigMap.
+settings:
+  # Namespaces the collector watches and the exporter reports on.
+  namespaces:
+    - predict-lab
+    - remediate-lab
+    - pattern-lab
+  # Namespace where incidents are raised (and where approved actions may run).
+  remediationNamespace: remediate-lab
+  # How often the collector reads metrics, in seconds.
+  collectorIntervalSeconds: 15
