@@ -12,7 +12,10 @@ DATABASE_URL = os.getenv(
 )
 
 # Create engine
-engine = create_engine(DATABASE_URL)
+# pool_pre_ping: check each pooled connection before use and replace dead ones. Without it, every component failed
+# once per stale connection after a database restart (seen on 24 Nov: the exporter returned HTTP 500 right after
+# the database pod restarted).
+engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 
 # Create session factory
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
