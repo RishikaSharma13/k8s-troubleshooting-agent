@@ -6,7 +6,17 @@ from pathlib import Path
 import pytest
 
 CHART = Path(__file__).resolve().parents[2] / "charts" / "k8s-failure-agent"
-pytestmark = pytest.mark.skipif(shutil.which("helm") is None, reason="needs helm")
+import os
+
+# In CI (REQUIRE_CHART_TOOLS=1) the chart tests must run: a missing helm or kubeconform fails instead of skipping.
+REQUIRED = os.environ.get("REQUIRE_CHART_TOOLS") == "1"
+pytestmark = pytest.mark.skipif(shutil.which("helm") is None and not REQUIRED, reason="needs helm")
+
+
+def test_chart_tools_present_where_required():
+    if not REQUIRED:
+        pytest.skip("only enforced in CI")
+    assert shutil.which("helm") and shutil.which("kubeconform"), "CI must install helm and kubeconform"
 yaml = pytest.importorskip("yaml")
 
 
@@ -94,7 +104,7 @@ def test_database_statefulset_is_pinned_non_root_and_persistent():
 
 
 def test_valid_kubernetes_1_34_objects():
-    if not shutil.which("kubeconform"):
+    if not shutil.which("kubeconform") and not REQUIRED:
         pytest.skip("needs kubeconform")
     r = subprocess.run(["kubeconform", "-strict", "-summary", "-kubernetes-version", "1.34.0", "-"],
                        input=render_text(), capture_output=True, text=True)

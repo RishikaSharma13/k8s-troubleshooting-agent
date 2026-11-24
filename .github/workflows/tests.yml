@@ -4,6 +4,10 @@ on:
   push:
   pull_request:
 
+# The token only reads the repository; nothing in CI needs to write yet.
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-22.04
@@ -25,6 +29,10 @@ jobs:
       DATABASE_URL: postgresql://postgres:password@localhost:5432/k8s_agent_test
       PYTHONPATH: backend
       PYTHONDONTWRITEBYTECODE: "1"
+      # In CI the chart tests must run: a missing helm or kubeconform is a failure here, not a skip.
+      REQUIRE_CHART_TOOLS: "1"
+      HELM_VERSION: v4.3.0
+      KUBECONFORM_VERSION: v0.6.7
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -34,7 +42,42 @@ jobs:
           cache-dependency-path: backend/requirements-dev.txt
       - name: Install dependencies
         run: pip install -r backend/requirements-dev.txt
+      - name: Install helm and kubeconform (pinned, checksum-verified)
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          curl -fsSLO "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          curl -fsSLO "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz.sha256sum"
+          sha256sum --check "helm-${HELM_VERSION}-linux-amd64.tar.gz.sha256sum"
+          tar -xzf "helm-${HELM_VERSION}-linux-amd64.tar.gz" linux-amd64/helm
+          curl -fsSLO "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          curl -fsSLO "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/CHECKSUMS"
+          grep " kubeconform-linux-amd64.tar.gz$" CHECKSUMS | sha256sum --check
+          tar -xzf kubeconform-linux-amd64.tar.gz kubeconform
+          sudo install -m 0755 linux-amd64/helm kubeconform /usr/local/bin/
+          helm version --short && kubeconform -v
+      - name: Lint the Helm chart
+        run: helm lint charts/k8s-failure-agent
       - name: Migrate an empty database from the first revision
         run: alembic upgrade head
       - name: Run the test suite
         run: python -m pytest backend/tests -q -p no:cacheprovider -rs
+
+  image:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the image, tagged by commit with a prefix (an all-digit id is never read as a number)
+        run: |
+          echo "TAG=sha-${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+          docker build -t "k8s-failure-agent:sha-${GITHUB_SHA::7}" .
+      - name: Smoke-test the image
+        run: |
+          set -euo pipefail
+          IMG="k8s-failure-agent:${TAG}"
+          test "$(docker run --rm "$IMG" id -u)" = 10001 && echo "runs as uid 10001"
+          docker run --rm "$IMG" kubectl version --client
+          docker run --rm "$IMG" python -c "import app.main, app.collector.run, app.remediation.watch, app.metrics.exporter, app.predictor.dashboard, prophet; print('imports ok')"
+          if docker run --rm "$IMG" python -c "import pytest" 2>/dev/null; then echo "pytest must not be in the image"; exit 1; fi
+          echo "no test tools in the image"
+          docker image ls "$IMG"
