@@ -142,7 +142,7 @@ disturbs the evaluation workloads:
    another reason first (e.g. a runtime restart): no claim either way. A crash that came after a pause stays
    CONFIRMED, but its timing is kept out of the error statistics.
 
-**Approve with a button.** `http://127.0.0.1:8000/ui` shows the dashboard with a live *Incidents awaiting approval*
+**Approve with a button.** `http://127.0.0.1:8080/ui` (opened by `scripts/start.sh`) shows the dashboard with a live *Incidents awaiting approval*
 panel: one click (with confirmation) approves and executes through the same safe path, and the command, dry run and
 before → after appear on the page. POSTs from other websites are refused.
 
@@ -185,9 +185,9 @@ to how results were judged, not to the forecast.
 
 The forecasts are published as **Prometheus metrics**, so the same comparison can run in the tools teams already use.
 
-- **A read-only exporter** (`app/metrics/exporter.py`) serves only `GET /metrics` and `/health`. It is separate from
-  the API on purpose: the API has approve/execute endpoints and listens on 127.0.0.1 only, while the exporter listens
-  on the Docker network between the laptop and the kind cluster (reachable from pods, not from the LAN).
+- **A read-only exporter** (`app/metrics/exporter.py`) serves only `GET /metrics` and `/health`. It runs in the
+  cluster as its own Deployment, with no Kubernetes API token, and Prometheus finds it through a **ServiceMonitor**
+  created by the Helm chart (no fixed address).
 - **Metrics:** `k8s_failure_seconds_to_limit` (with the calibrated `_lower`/`_upper`), `k8s_failure_memory_usage_ratio`,
   `k8s_failure_forecast_status`, `k8s_failure_incidents` (by verdict), `k8s_failure_executions` (by result).
 - **kube-prometheus-stack** installed with Helm, pinned to a release at least 14 days old
@@ -283,30 +283,83 @@ and weekly, so a fair Prophet test on a 20-minute cycle would need a custom seas
 
 ---
 
+## Run it in Kubernetes with Helm
+
+The whole system runs inside the cluster as one Helm release, from the chart in `charts/k8s-failure-agent`:
+
+| Component | Kubernetes object | May do in the cluster |
+|---|---|---|
+| Database | StatefulSet with a 1 GiB volume (PostgreSQL 16) | nothing (no API token) |
+| Migrations | Job, run as a Helm hook (post-install, pre-upgrade) | nothing |
+| Collector | Deployment | read pods, Jobs and pod metrics in each watched namespace; optionally kubelet disk stats (`nodes/proxy`) |
+| Watcher | Deployment | nothing: database only |
+| API, approval page and executor | Deployment (+ dashboard sidecar), ClusterIP Service | patch Deployments **only in the remediation namespace**, and read that namespace's labels |
+| Exporter | Deployment, ClusterIP Service, ServiceMonitor | nothing: database only |
+
+How the chart protects the system:
+
+- **Least privilege, verified by Kubernetes itself:** `kubectl auth can-i` confirms the collector cannot delete pods
+  or read Secrets, the watcher cannot touch the cluster, and the only write anywhere is patching Deployments in
+  `remediate-lab`. No wildcards, no Secrets access, no create or delete. Every container runs as non-root, with a
+  read-only root filesystem and all capabilities dropped.
+- **The database password is generated once** and reused through `lookup`, and kept on uninstall like the volume,
+  so neither an upgrade nor a reinstall can lock the components out of their data (verified on kind).
+- **Migrations run before every upgrade.** If they fail, the upgrade stops and the running version is untouched;
+  this happened for real when an all-digit image tag (`4764173`) was read as a number. The tag is now always
+  rendered as text, and the setup script tags images `sha-<commit>`.
+- **`values.schema.json` rejects mistakes before anything renders:** a typo such as `collecter.nodeStats` (which Helm
+  would otherwise silently ignore), wrong types, an untagged or `latest` database image, out-of-range ports.
+- **`helm test`** checks a running release from inside the cluster: the API and exporter answer, and `/metrics`
+  carries forecast metrics.
+
+```bash
+docker build -t k8s-failure-agent:sha-$(git rev-parse --short HEAD) .
+kind load docker-image k8s-failure-agent:sha-$(git rev-parse --short HEAD) --name aiops-lab
+helm upgrade --install demo charts/k8s-failure-agent -n failure-agent --create-namespace \
+  --set-string image.tag=sha-$(git rev-parse --short HEAD) --wait
+helm test demo -n failure-agent --logs
+scripts/start.sh                          # approval page http://127.0.0.1:8080/ui
+```
+
+**Moving in (24 Nov 2026).** The history built up by the earlier laptop setup was moved into the cluster with
+`pg_dump`/`pg_restore` (PostgreSQL 15 to 16): both databases were backed up first, the components paused during the
+copy, and every table was compared afterwards (identical row counts, from 289 incidents to 403,194 memory readings).
+The full loop was then proven inside the cluster: a crash predicted for 12:29:34 was approved on the in-cluster page,
+the least-privilege executor restarted the workload at 12:17:06 (12.5 minutes ahead), and the verifier judged it
+**AVOIDED**.
+
+---
+
 ## Running it
 
 ### Try it yourself (one command)
 
 On a Linux machine with **Docker** (usable without sudo), **[kind](https://kind.sigs.k8s.io/)**, **kubectl**,
-**Python 3.10+** and **curl** (plus **Helm** and **openssl** for monitoring):
+**Helm**, **git**, **Python 3.10+** and **curl** (plus **openssl** for monitoring):
 
 ```bash
 git clone https://github.com/RishikaSharma13/k8s-troubleshooting-agent.git
 cd k8s-troubleshooting-agent
 scripts/setup-lab.sh --check              # what exists and what would be done; changes nothing
-scripts/setup-lab.sh                      # build the lab (15-20 min the first time), then start the services
-scripts/setup-lab.sh --with-monitoring    # optional: also Prometheus and Grafana
+scripts/setup-lab.sh --with-monitoring    # build the lab (20-30 min the first time), then open it
 ```
 
-It creates a kind cluster (`aiops-lab`, Kubernetes v1.34.0), metrics-server (v0.7.2), PostgreSQL in Docker
-(on 127.0.0.1 only), the Python environment and schema, and the three lab namespaces; every step skips what
-already exists, so it never changes an existing setup. Then open **http://127.0.0.1:8000/ui**: within about
-20 minutes the leaking workload gets a predicted crash with an **Approve** button. With monitoring: Grafana at
-http://localhost:3000 (user `admin`, password in `~/.k8s-failure-lab-grafana-admin`), Prometheus at http://localhost:9090.
+It creates a kind cluster (`aiops-lab`, Kubernetes v1.34.0), metrics-server (v0.7.2), the three lab namespaces,
+optionally Prometheus and Grafana (installed **before** the release, so its ServiceMonitor is created), builds the
+image tagged `sha-<commit>`, and installs the Helm release. Every step skips what already exists, so it never changes
+an existing setup. Then open **http://127.0.0.1:8080/ui**: within about 20 minutes the leaking workload gets a
+predicted crash with an **Approve** button. With monitoring: Grafana at http://localhost:3000 (user `admin`, password
+in `~/.k8s-failure-lab-grafana-admin`), Prometheus at http://localhost:9090. Add `--dev` for a local PostgreSQL and
+Python environment, to run the tests.
 
-Daily use: `scripts/start.sh` (after a reboot) and `scripts/stop.sh` (stops the services; data is kept).
-To remove the lab completely, deliberately, one command at a time:
-`kind delete cluster --name aiops-lab`, `docker rm -f k8s-agent-db`, `docker volume rm k8s-agent-db-data`.
+Daily use: `scripts/start.sh` (after a reboot: starts the cluster if needed and opens the windows into it) and
+`scripts/stop.sh` (closes them; the system keeps running in the cluster). To remove the lab completely, deliberately,
+one command at a time: `helm uninstall demo -n failure-agent`, `kind delete cluster --name aiops-lab`.
+
+### Running the components by hand (development)
+
+The sections below run each component on your own machine, against a local database: how the system was developed
+and evaluated, and still useful for experiments. The lab itself runs in the cluster (above).
 
 ### Prerequisites
 
@@ -421,6 +474,8 @@ docs/testing/remediate-lab/ the workload that remediation acts on (kept separate
 docs/testing/pattern-lab/  realistic patterns: cycles, noise and spikes, steps
 docs/monitoring/           Prometheus/Grafana values, alert rules, dashboard
 scripts/                   setup-lab.sh, start.sh, stop.sh
+charts/k8s-failure-agent/  Helm chart: templates, values and schema, RBAC, helm test
+Dockerfile                 one image for every component (non-root, pinned kubectl)
 docs/results/              committed evaluation reports
 ```
 
@@ -450,14 +505,19 @@ docs/results/              committed evaluation reports
   and every deployment now starts with a check that the merged code is really there.
 - **Measure the warning that is still on when it matters.** On cyclic memory, "time since the first alert" reported 98
   minutes of warning while the alert was off at every crash; "sustained warning" exposed it.
+- **Make the safe path the default in packaging too.** The chart generates the database password once (an upgrade
+  never changes it), runs migrations before upgrades (a failed one stopped a broken deploy for real), and validates
+  values before rendering. Two bugs found on the way: duplicate pod labels that `helm lint` accepted (strict schema
+  validation caught them) and an all-digit image tag read as a number.
+- **Tests must not be able to touch real systems.** A setup test meant to fake a missing `helm` found the real one
+  on a developer machine; the tests now run with a sealed search path of stand-ins.
 
 ---
 
 ## What's next
 
+- CI that builds the image on every push, scans it (Trivy), publishes it and the chart, tagged by commit.
+- GitOps: Argo CD deploying the chart from Git.
+- Security hardening: NetworkPolicies, the restricted Pod Security Standard, an SBOM.
 - An adaptive look-back (detect a repeating pattern, then look back over two of its cycles), re-tested on new data.
 - A safety margin for spiky workloads, from their own calibrated errors; a fair Prophet test with a custom seasonality.
-- Find the cause of persistent early Job alerts (probably start-up time counted as slow progress).
-- Calibrate the storage ranges as well.
-- Run the collector and watcher inside the cluster with a read-only service account, instead of on a laptop.
-- Count distinct incidents and alert volume, as a production system would need; then low-risk automatic actions.
