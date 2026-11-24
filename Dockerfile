@@ -2,18 +2,18 @@
 # The Helm chart picks the command per component. Build from the repository root:
 #   docker build -t k8s-failure-agent:dev .
 #
-# Python 3.10 matches the version the test suite runs on. kubectl is pinned and checksum-verified
+# Python 3.12 matches the version the test suite runs on (3.10 reached end of life in October 2026). kubectl is pinned and checksum-verified
 # (the collector and the executor call it). The final image has no compilers, no test tools, and runs as non-root.
 
 # ---------- build: install the Python dependencies into a virtual environment ----------
-FROM python:3.10-slim-bookworm AS build
+FROM python:3.12-slim-bookworm AS build
 ENV PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
 RUN python -m venv /opt/venv
 COPY backend/requirements.txt /tmp/requirements.txt
 RUN /opt/venv/bin/pip install -r /tmp/requirements.txt
 
 # ---------- kubectl: pinned version, verified against its published SHA-256 ----------
-FROM python:3.10-slim-bookworm AS kubectl
+FROM python:3.12-slim-bookworm AS kubectl
 ARG KUBECTL_VERSION=v1.34.13
 ARG TARGETARCH=amd64
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -29,7 +29,7 @@ RUN apt-get update \
  && install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
 
 # ---------- runtime ----------
-FROM python:3.10-slim-bookworm
+FROM python:3.12-slim-bookworm
 LABEL org.opencontainers.image.title="k8s-failure-agent" \
       org.opencontainers.image.description="Kubernetes failure prediction, safe remediation and verification" \
       org.opencontainers.image.source="https://github.com/RishikaSharma13/k8s-troubleshooting-agent"
