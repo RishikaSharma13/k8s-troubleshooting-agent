@@ -264,3 +264,12 @@ def test_helm_test_pod_passes_on_a_working_release():
 def test_helm_test_pod_fails_when_metrics_are_missing():
     r = _run_test_pod_script(b"# nothing useful here\n")
     assert r.returncode == 1 and "FAIL exporter /metrics" in r.stdout, r.stdout
+
+
+def test_every_container_including_database_and_hooks_is_read_only():
+    """Seen on 24 Nov: the Trivy config scan found the database container's root filesystem writable."""
+    pods = [d["spec"]["template"]["spec"] for d in render() if d["kind"] in ("Deployment", "StatefulSet", "Job")]
+    pods += [d["spec"] for d in render() if d["kind"] == "Pod"]
+    for pod in pods:
+        for c in pod.get("initContainers", []) + pod["containers"]:
+            assert c["securityContext"]["readOnlyRootFilesystem"] is True, c["name"]

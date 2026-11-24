@@ -45,6 +45,8 @@ spec:
               value: /var/lib/postgresql/data/pgdata
           securityContext:
             allowPrivilegeEscalation: false
+            # Writes go only to the data volume, the socket directory and /tmp (found by the Trivy config scan).
+            readOnlyRootFilesystem: true
             capabilities: {drop: [ALL]}
           readinessProbe:
             exec: {command: [pg_isready, -U, postgres, -h, 127.0.0.1]}
@@ -61,8 +63,12 @@ spec:
             # PostgreSQL writes its socket here; an emptyDir keeps it writable for the non-root user.
             - name: run
               mountPath: /var/run/postgresql
+            - name: tmp
+              mountPath: /tmp
       volumes:
         - name: run
+          emptyDir: {}
+        - name: tmp
           emptyDir: {}
   volumeClaimTemplates:
     - metadata:

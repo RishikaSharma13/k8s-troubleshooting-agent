@@ -11,3 +11,6 @@ psycopg2-binary==2.9.9
 alembic==1.12.1
 pandas==2.3.3
 prophet==1.5.0
+# Pulled in by matplotlib. 13.0.0 fixes five CRITICAL CVEs found by the Trivy gate (24 Nov 2026) and needs Python 3.11+;
+# the image runs 3.12. The marker keeps older local environments installable.
+pillow==13.0.0; python_version >= "3.11"

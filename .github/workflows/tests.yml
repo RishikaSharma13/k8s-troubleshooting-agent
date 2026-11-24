@@ -37,7 +37,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: "3.12"
           cache: pip
           cache-dependency-path: backend/requirements-dev.txt
       - name: Install dependencies
@@ -65,8 +65,26 @@ jobs:
 
   image:
     runs-on: ubuntu-22.04
+    env:
+      TRIVY_VERSION: 0.76.2
+      # Google's mirror first: GitHub's registry sometimes rate-limits the vulnerability database download.
+      TRIVY_DB_REPOSITORY: mirror.gcr.io/aquasec/trivy-db,ghcr.io/aquasecurity/trivy-db
     steps:
       - uses: actions/checkout@v4
+      - name: Install Trivy (pinned, checksum-verified)
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          base="https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}"
+          curl -fsSLO "${base}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          curl -fsSLO "${base}/trivy_${TRIVY_VERSION}_checksums.txt"
+          grep " trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz$" "trivy_${TRIVY_VERSION}_checksums.txt" | sha256sum --check
+          tar -xzf "trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" trivy
+          sudo install -m 0755 trivy /usr/local/bin/trivy
+          trivy --version
+      - name: Scan the configuration we ship (Dockerfile, Helm chart); fail on HIGH or CRITICAL
+        # docs/testing holds the deliberately simple lab workloads, which are not deployed by the chart.
+        run: trivy config --severity HIGH,CRITICAL --skip-dirs docs/testing --ignorefile .trivyignore --exit-code 1 .
       - name: Build the image, tagged by commit with a prefix (an all-digit id is never read as a number)
         run: |
           echo "TAG=sha-${GITHUB_SHA::7}" >> "$GITHUB_ENV"
@@ -81,3 +99,7 @@ jobs:
           if docker run --rm "$IMG" python -c "import pytest" 2>/dev/null; then echo "pytest must not be in the image"; exit 1; fi
           echo "no test tools in the image"
           docker image ls "$IMG"
+      - name: Vulnerability report (HIGH and CRITICAL; for visibility, never fails)
+        run: trivy image --scanners vuln --severity HIGH,CRITICAL --ignorefile .trivyignore --exit-code 0 --no-progress "k8s-failure-agent:${TAG}"
+      - name: Vulnerability gate (fail on CRITICAL with a fix available)
+        run: trivy image --scanners vuln --severity CRITICAL --ignore-unfixed --ignorefile .trivyignore --exit-code 1 --no-progress "k8s-failure-agent:${TAG}"
