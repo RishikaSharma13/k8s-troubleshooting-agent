@@ -11,11 +11,8 @@ prometheus:
     resources:
       requests: {memory: 400Mi}
       limits: {memory: 1500Mi}
-    additionalScrapeConfigs:
-      - job_name: k8s-failure-forecast
-        scrape_interval: 15s
-        static_configs:
-          - targets: ["172.18.0.1:9105"]        # the read-only exporter, on the kind Docker network gateway
+    # The exporter runs in the cluster (Helm chart charts/k8s-failure-agent) and is discovered through its
+    # ServiceMonitor, which carries this release's label (release: monitoring); no fixed address is needed.
 alertmanager:
   alertmanagerSpec:
     resources:

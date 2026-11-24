@@ -27,13 +27,22 @@ def test_rules_compare_forecast_and_threshold():
     assert by["threshold"]["expr"] == "k8s_failure_memory_usage_ratio > 0.8"
 
 
-def test_scrape_target_and_no_password_in_the_repository():
-    text = (MON / "kube-prometheus-stack-values.yaml").read_text()
-    values = yaml.safe_load(text)
-    target = values["prometheus"]["prometheusSpec"]["additionalScrapeConfigs"][0]["static_configs"][0]["targets"][0]
-    assert target.endswith(":9105")                                   # the exporter's default port
+def test_exporter_discovered_by_service_monitor_and_no_password_in_the_repository():
+    """The exporter runs in the cluster: no fixed scrape address; the chart's ServiceMonitor carries the label
+    this Prometheus selects (kube-prometheus-stack selects ServiceMonitors by its release label)."""
+    values = yaml.safe_load((MON / "kube-prometheus-stack-values.yaml").read_text())
+    assert "additionalScrapeConfigs" not in values["prometheus"]["prometheusSpec"]
+    chart_values = yaml.safe_load((MON.parents[1] / "charts" / "k8s-failure-agent" / "values.yaml").read_text())
+    assert chart_values["serviceMonitor"]["enabled"] is True
+    assert chart_values["serviceMonitor"]["labels"] == {"release": "monitoring"}
     assert "adminPassword" not in (values.get("grafana") or {})       # generated at install time, never committed
 
+
+def test_start_script_only_opens_windows_into_the_cluster():
+    text = (MON.parents[1] / "scripts" / "start.sh").read_text()
+    for app_process in ("app.collector.run", "app.remediation.watch", "uvicorn", "app.metrics.exporter"):
+        assert app_process not in text                               # the system runs in the cluster now
+    assert "port-forward" in text and "Restart=always" in text
 
 def test_dashboard_is_valid_json_with_unique_panels():
     cm = yaml.safe_load((MON / "grafana-dashboard.yaml").read_text())
