@@ -1,0 +1,7 @@
+# Accepted Trivy findings. Each line is one finding ID with an expiry date: after it, the exception stops applying
+# and CI fails until someone reviews it again. Every entry needs a reason above it.
+#
+# KSV-0047: the collector's optional nodes/proxy read (kubelet statistics for disk forecasts). The kubelet API can do
+# more than report statistics, which is why it is a separate, documented ClusterRole that collector.nodeStats=false
+# removes. Revisit: read disk usage through node-exporter or a DaemonSet instead.
+KSV-0047 exp:2027-02-24
