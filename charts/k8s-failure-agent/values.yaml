@@ -28,6 +28,10 @@ settings:
 
 # PostgreSQL, run inside the release as a StatefulSet (one pod with its own persistent disk).
 database:
+  # Use an existing Secret (key "password") instead of generating one. Needed under GitOps tools such as Argo CD:
+  # they render the chart without cluster access, so `lookup` cannot find the existing password, and every render
+  # would produce a new random one (which would then overwrite the real password).
+  existingSecret: ""
   image: postgres:16.9-bookworm
   name: k8s_agent
   storage: 1Gi
