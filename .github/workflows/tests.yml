@@ -103,3 +103,52 @@ jobs:
         run: trivy image --scanners vuln --severity HIGH,CRITICAL --ignorefile .trivyignore --exit-code 0 --no-progress "k8s-failure-agent:${TAG}"
       - name: Vulnerability gate (fail on CRITICAL with a fix available)
         run: trivy image --scanners vuln --severity CRITICAL --ignore-unfixed --ignorefile .trivyignore --exit-code 1 --no-progress "k8s-failure-agent:${TAG}"
+
+  publish:
+    # Only reviewed, merged code is published: pushes to main, after the tests and the image checks have passed.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [test, image]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      packages: write          # the only job allowed to write anything: pushing the image to ghcr.io
+    env:
+      TRIVY_VERSION: 0.76.2
+      TRIVY_DB_REPOSITORY: mirror.gcr.io/aquasec/trivy-db,ghcr.io/aquasecurity/trivy-db
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Trivy (pinned, checksum-verified)
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          base="https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}"
+          curl -fsSLO "${base}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          curl -fsSLO "${base}/trivy_${TRIVY_VERSION}_checksums.txt"
+          grep " trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz$" "trivy_${TRIVY_VERSION}_checksums.txt" | sha256sum --check
+          tar -xzf "trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" trivy
+          sudo install -m 0755 trivy /usr/local/bin/trivy
+      - name: Build the image to publish (tagged by commit; never "latest")
+        run: |
+          set -euo pipefail
+          owner="${GITHUB_REPOSITORY_OWNER,,}"          # registry paths must be lowercase
+          image="ghcr.io/${owner}/k8s-failure-agent:sha-${GITHUB_SHA::7}"
+          echo "IMAGE=${image}" >> "$GITHUB_ENV"
+          docker build --label "org.opencontainers.image.revision=${GITHUB_SHA}" -t "${image}" .
+      - name: Vulnerability gate on the exact image being published
+        run: trivy image --scanners vuln --severity CRITICAL --ignore-unfixed --ignorefile .trivyignore --exit-code 1 --no-progress "${IMAGE}"
+      - name: Push to GitHub's container registry (short-lived job token; no stored password)
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "${REGISTRY_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+          docker push "${IMAGE}"
+          digest="$(docker inspect --format '{{index .RepoDigests 0}}' "${IMAGE}")"
+          docker logout ghcr.io
+          {
+            echo "### Image published"
+            echo ""
+            echo "- tag: \`${IMAGE}\`"
+            echo "- digest: \`${digest}\`"
+            echo "- commit: \`${GITHUB_SHA}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
