@@ -111,8 +111,9 @@ jobs:
     runs-on: ubuntu-22.04
     permissions:
       contents: read
-      packages: write          # the only job allowed to write anything: pushing the image to ghcr.io
+      packages: write          # the only job allowed to write anything: pushing the image and chart to ghcr.io
     env:
+      HELM_VERSION: v4.3.0
       TRIVY_VERSION: 0.76.2
       TRIVY_DB_REPOSITORY: mirror.gcr.io/aquasec/trivy-db,ghcr.io/aquasecurity/trivy-db
     steps:
@@ -127,6 +128,15 @@ jobs:
           grep " trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz$" "trivy_${TRIVY_VERSION}_checksums.txt" | sha256sum --check
           tar -xzf "trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" trivy
           sudo install -m 0755 trivy /usr/local/bin/trivy
+      - name: Install helm (pinned, checksum-verified)
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          curl -fsSLO "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          curl -fsSLO "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz.sha256sum"
+          sha256sum --check "helm-${HELM_VERSION}-linux-amd64.tar.gz.sha256sum"
+          tar -xzf "helm-${HELM_VERSION}-linux-amd64.tar.gz" linux-amd64/helm
+          sudo install -m 0755 linux-amd64/helm /usr/local/bin/helm
       - name: Build the image to publish (tagged by commit; never "latest")
         run: |
           set -euo pipefail
@@ -151,4 +161,28 @@ jobs:
             echo "- tag: \`${IMAGE}\`"
             echo "- digest: \`${digest}\`"
             echo "- commit: \`${GITHUB_SHA}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Publish the Helm chart as an OCI artifact, paired with this image
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          base="$(awk '$1 == "version:" {print $2}' charts/k8s-failure-agent/Chart.yaml)"
+          # One chart version per commit, never republished. "sha<commit>" (not "sha.<commit>"): a semver number
+          # part may not start with 0, and a commit id can.
+          version="${base}-sha${GITHUB_SHA::7}"
+          helm lint charts/k8s-failure-agent
+          helm package charts/k8s-failure-agent --version "${version}" --app-version "sha-${GITHUB_SHA::7}" -d "$RUNNER_TEMP/chart"
+          echo "${REGISTRY_TOKEN}" | helm registry login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+          helm push "$RUNNER_TEMP/chart/k8s-failure-agent-${version}.tgz" "oci://ghcr.io/${owner}/charts" 2>&1 | tee "$RUNNER_TEMP/push.log"
+          helm show chart "oci://ghcr.io/${owner}/charts/k8s-failure-agent" --version "${version}" | grep -E '^(version|appVersion):'
+          helm registry logout ghcr.io
+          {
+            echo ""
+            echo "### Chart published"
+            echo ""
+            echo "- chart: \`oci://ghcr.io/${owner}/charts/k8s-failure-agent\` version \`${version}\`"
+            echo "- deploys image: \`sha-${GITHUB_SHA::7}\`"
+            echo "- $(grep -m1 -i digest "$RUNNER_TEMP/push.log")"
           } >> "$GITHUB_STEP_SUMMARY"

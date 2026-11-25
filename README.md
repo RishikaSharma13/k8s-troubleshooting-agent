@@ -312,11 +312,20 @@ How the chart protects the system:
 - **`helm test`** checks a running release from inside the cluster: the API and exporter answer, and `/metrics`
   carries forecast metrics.
 
+Every merge to `main` publishes a matched pair to GitHub's registry, after the tests and the Trivy gate: the image
+`ghcr.io/rishikasharma13/k8s-failure-agent:sha-<commit>` and the chart
+`oci://ghcr.io/rishikasharma13/charts/k8s-failure-agent`, version `<x.y.z>-sha<commit>`, whose default image is the
+one from the same commit (never `latest`; the image's `org.opencontainers.image.revision` label names its commit).
+
 ```bash
+# Install the published pair (choose a version from the repository's Packages page):
+helm upgrade --install demo oci://ghcr.io/rishikasharma13/charts/k8s-failure-agent --version 0.2.0-sha<commit> \
+  -n failure-agent --create-namespace --wait
+# Or build from the working tree and load the image into kind:
 docker build -t k8s-failure-agent:sha-$(git rev-parse --short HEAD) .
 kind load docker-image k8s-failure-agent:sha-$(git rev-parse --short HEAD) --name aiops-lab
 helm upgrade --install demo charts/k8s-failure-agent -n failure-agent --create-namespace \
-  --set-string image.tag=sha-$(git rev-parse --short HEAD) --wait
+  --set-string image.repository=k8s-failure-agent --set-string image.tag=sha-$(git rev-parse --short HEAD) --wait
 helm test demo -n failure-agent --logs
 scripts/start.sh                          # approval page http://127.0.0.1:8080/ui
 ```
