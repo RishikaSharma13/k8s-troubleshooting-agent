@@ -113,6 +113,12 @@
               }
             }
           }
+        },
+        "existingSecret": {
+          "type": "string",
+          "pattern": "^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "maxLength": 253,
+          "description": "an existing Secret with key 'password'; empty: the chart generates one"
         }
       }
     },

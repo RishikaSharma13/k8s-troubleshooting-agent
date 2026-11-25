@@ -222,6 +222,7 @@ def test_all_digit_image_tag_stays_text():
     ("database.image=postgres:latest", "'not' failed"),
     ("api.port=0", "minimum"),
     ("settings.remediationNamespace=default", "must be one of settings.namespaces"),
+    ("database.existingSecret=Bad_Name", "does not match pattern"),
 ])
 def test_bad_values_are_rejected_before_rendering(value, message):
     r = subprocess.run(["helm", "template", "demo", str(CHART), "--set", value], capture_output=True, text=True)
@@ -273,3 +274,22 @@ def test_every_container_including_database_and_hooks_is_read_only():
     for pod in pods:
         for c in pod.get("initContainers", []) + pod["containers"]:
             assert c["securityContext"]["readOnlyRootFilesystem"] is True, c["name"]
+
+
+def test_existing_secret_replaces_the_generated_one_everywhere():
+    """Under Argo CD the chart must not create the password Secret: `lookup` cannot see the cluster there."""
+    docs = render("--set", "database.existingSecret=shared-db-password")
+    assert by_kind(docs, "Secret") == []
+    text = render_text("--set", "database.existingSecret=shared-db-password")
+    refs = [l for l in text.splitlines() if "secretKeyRef" in l]
+    assert len(refs) >= 6 and all("shared-db-password" in l for l in refs), refs
+
+
+def test_render_is_reproducible_with_an_existing_secret():
+    """Argo CD re-renders constantly: any difference between two renders would read as drift from Git."""
+    args = ("--set", "database.existingSecret=demo-k8s-failure-agent-db")
+    assert render_text(*args) == render_text(*args)
+
+
+def test_default_render_still_generates_the_password():
+    assert len(by_kind(render(), "Secret")) == 1                       # Helm users keep the generate-once behavior

@@ -57,6 +57,11 @@ toString: `--set image.tag=4764173` (an all-digit commit id) arrives as a number
 {{- printf "%s-db" (include "fa.fullname" .) | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
+{{/* The Secret holding the database password: an existing one if named, otherwise the one this chart creates. */}}
+{{- define "fa.dbSecretName" -}}
+{{- default (include "fa.dbName" .) .Values.database.existingSecret }}
+{{- end }}
+
 {{/*
 Environment for any container that talks to the database. The password comes from the Secret, and Kubernetes
 expands $(DB_PASSWORD) inside the pod, so the password never appears in the chart, the values or the release.
@@ -64,7 +69,7 @@ expands $(DB_PASSWORD) inside the pod, so the password never appears in the char
 {{- define "fa.databaseEnv" -}}
 - name: DB_PASSWORD
   valueFrom:
-    secretKeyRef: {name: {{ include "fa.dbName" . }}, key: password}
+    secretKeyRef: {name: {{ include "fa.dbSecretName" . }}, key: password}
 - name: DATABASE_URL
   value: "postgresql://postgres:$(DB_PASSWORD)@{{ include "fa.dbName" . }}:5432/{{ .Values.database.name }}"
 {{- end }}
