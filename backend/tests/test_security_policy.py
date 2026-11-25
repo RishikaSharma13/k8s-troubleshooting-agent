@@ -47,3 +47,20 @@ def test_images_are_published_only_from_main_after_every_check():
     assert gate < push                                                     # nothing unscanned is ever pushed
     run = "\n".join(s.get("run", "") for s in job["steps"])
     assert "--password-stdin" in run and "latest" not in run                # no stored password; no mutable tag
+
+
+def test_chart_is_published_with_the_image_as_a_matched_pair():
+    job = _workflow()["jobs"]["publish"]
+    steps = [s.get("name", "") for s in job["steps"]]
+    image_push = next(i for i, n in enumerate(steps) if n.startswith("Push"))
+    chart_push = next(i for i, n in enumerate(steps) if "Helm chart" in n)
+    assert image_push < chart_push                                         # never a chart pointing at a missing image
+    run = next(s["run"] for s in job["steps"] if "Helm chart" in s.get("name", ""))
+    assert 'version="${base}-sha${GITHUB_SHA::7}"' in run                  # one immutable version per commit
+    assert '--app-version "sha-${GITHUB_SHA::7}"' in run                   # deploys the image from the same commit
+    assert "--password-stdin" in run and "latest" not in run
+
+
+def test_every_downloaded_tool_is_checksum_verified():
+    wf = (ROOT / ".github" / "workflows" / "tests.yml").read_text()
+    assert wf.count("sha256sum --check") >= 4, "helm (twice), kubeconform and trivy (twice) must be verified"

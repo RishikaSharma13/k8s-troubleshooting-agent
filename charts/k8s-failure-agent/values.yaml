@@ -1,11 +1,13 @@
 # Default settings for the chart. Override any of them with -f my-values.yaml or --set key=value.
 
-# The container image (built from the repository's Dockerfile).
+# The container image (built from the repository's Dockerfile, published by CI from main).
 image:
-  repository: k8s-failure-agent
-  # Empty means "use the chart's appVersion" (see Chart.yaml).
+  # For an image built locally and loaded with `kind load docker-image`, set repository=k8s-failure-agent.
+  repository: ghcr.io/rishikasharma13/k8s-failure-agent
+  # Empty means "use the chart's appVersion". A chart published by CI (version <x.y.z>-sha<commit>) has
+  # appVersion sha-<commit>, so it deploys exactly the image built from the same commit.
   tag: ""
-  # IfNotPresent: use the image already loaded into the cluster (kind load docker-image); don't pull it.
+  # IfNotPresent: pull once, then reuse the image already on the node.
   pullPolicy: IfNotPresent
 
 # Rename everything this release creates (rarely needed).
