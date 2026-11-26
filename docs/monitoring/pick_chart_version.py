@@ -17,8 +17,10 @@ CHART, MIN_AGE_DAYS = "kube-prometheus-stack", 14
 
 
 def parse_time(text: str) -> datetime:
-    """Helm writes nanoseconds (9 decimals); Python 3.10 accepts at most 6, so trim the fraction."""
-    text = re.sub(r"(\.\d{6})\d+", r"\1", text.replace("Z", "+00:00"))
+    """Helm indexes write 1 to 9 decimals (trailing zeros dropped); Python 3.10 accepts exactly 3 or 6.
+    Normalize the fraction to exactly 6 digits: trimmed if longer, padded with zeros if shorter."""
+    text = text.replace("Z", "+00:00")
+    text = re.sub(r"\.(\d+)", lambda m: "." + m.group(1)[:6].ljust(6, "0"), text, count=1)
     return datetime.fromisoformat(text)
 
 
