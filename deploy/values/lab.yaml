@@ -2,7 +2,7 @@
 # To deploy another version: change image.tag in a pull request; after the merge, Argo CD applies it.
 image:
   # A published image (ghcr.io/rishikasharma13/k8s-failure-agent), tagged by the main commit it was built from.
-  tag: sha-afdee8d
+  tag: sha-ac8f211
 database:
   # Required under Argo CD: it renders the chart without cluster access, so the chart must not generate a password
   # (every render would produce a new one). This Secret was created once by Helm and is kept on uninstall.
