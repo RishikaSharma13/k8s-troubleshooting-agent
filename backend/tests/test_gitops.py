@@ -58,3 +58,43 @@ def test_application_is_fenced_to_this_repository():
     assert PROJECT["spec"]["sourceRepos"] == [SRC["repoURL"]]
     assert APP["spec"]["project"] == PROJECT["metadata"]["name"] != "default"
     assert SRC["targetRevision"] == "main" and SRC["helm"]["releaseName"] == "demo"
+
+
+ROOT_DOCS = [d for d in yaml.safe_load_all((ROOT / "deploy/argocd/bootstrap/root.yaml").read_text()) if d]
+ROOT_PROJECT = next(d for d in ROOT_DOCS if d["kind"] == "AppProject")
+ROOT_APP = next(d for d in ROOT_DOCS if d["kind"] == "Application")
+
+
+def test_root_is_fenced_to_argocd_objects_in_the_argocd_namespace():
+    spec = ROOT_PROJECT["spec"]
+    assert spec["destinations"] == [{"server": "https://kubernetes.default.svc", "namespace": "argocd"}]
+    assert spec["clusterResourceWhitelist"] == []                             # nothing cluster-wide
+    assert {(w["group"], w["kind"]) for w in spec["namespaceResourceWhitelist"]} == {
+        ("argoproj.io", "Application"), ("argoproj.io", "AppProject")}
+    assert ROOT_APP["spec"]["project"] == "gitops-root"
+
+
+def test_root_applies_only_what_its_fence_allows():
+    """Every file the root syncs (top level of deploy/argocd) must be an Argo CD object in namespace argocd."""
+    src = ROOT_APP["spec"]["source"]
+    assert src["path"] == "deploy/argocd" and src["directory"]["recurse"] is False
+    files = sorted((ROOT / src["path"]).glob("*.yaml"))
+    assert [f.name for f in files] == ["application.yaml", "project.yaml"]  # the bootstrap folder is not synced
+    for f in files:
+        for d in (x for x in yaml.safe_load_all(f.read_text()) if x):
+            assert d["apiVersion"].startswith("argoproj.io/") and d["kind"] in ("Application", "AppProject"), f.name
+            assert d["metadata"]["namespace"] == "argocd", f.name
+
+
+def test_root_heals_itself_but_never_prunes():
+    """Deleting application.yaml from Git must not delete the running system."""
+    policy = ROOT_APP["spec"]["syncPolicy"]["automated"]
+    assert policy["selfHeal"] is True and policy["prune"] is False
+
+
+def test_scripts_find_the_release_whoever_manages_it():
+    for script in ("scripts/start.sh", "scripts/setup-lab.sh"):
+        text = (ROOT / script).read_text()
+        assert "helm status" not in text, script                             # there is no Helm release under Argo CD
+        assert "get deployment" in text and "-collector" in text, script   # looks for the collector Deployment
+    assert "-n argocd get application" in (ROOT / "scripts/start.sh").read_text()

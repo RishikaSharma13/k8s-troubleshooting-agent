@@ -1,0 +1,43 @@
+# The only manifest ever applied by hand (once):  kubectl apply -f deploy/argocd/bootstrap/root.yaml
+# The root Application keeps Argo CD's own settings in deploy/argocd (project.yaml, application.yaml) matching Git,
+# so a change to them is a pull request like any other ("app of apps"). It does not look into this bootstrap folder.
+#
+# Its project fences it in: it may create only Argo CD Applications and AppProjects, only in namespace argocd, and
+# nothing cluster-wide; a Deployment slipped into deploy/argocd would be refused. No prune: deleting application.yaml
+# from Git does not delete the running system (removing an application stays a deliberate act).
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: gitops-root
+  namespace: argocd
+spec:
+  description: Argo CD's own Applications and AppProjects, from deploy/argocd
+  sourceRepos:
+    - https://github.com/RishikaSharma13/k8s-troubleshooting-agent.git
+  destinations:
+    - {server: https://kubernetes.default.svc, namespace: argocd}
+  clusterResourceWhitelist: []
+  namespaceResourceWhitelist:
+    - {group: argoproj.io, kind: Application}
+    - {group: argoproj.io, kind: AppProject}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: gitops-root
+  namespace: argocd
+spec:
+  project: gitops-root
+  source:
+    repoURL: https://github.com/RishikaSharma13/k8s-troubleshooting-agent.git
+    targetRevision: main
+    path: deploy/argocd
+    directory:
+      recurse: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      selfHeal: true
+      prune: false

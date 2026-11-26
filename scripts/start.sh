@@ -15,6 +15,7 @@ RELEASE="${RELEASE:-demo}"
 NAMESPACE="${NAMESPACE:-failure-agent}"
 CLUSTER_CONTAINER="${CLUSTER_CONTAINER:-aiops-lab-control-plane}"
 FULLNAME="${FULLNAME:-$RELEASE-k8s-failure-agent}"
+APP="${APP:-k8s-failure-agent}"                   # the Argo CD Application, if Argo CD manages the release
 KUBECTL="$(command -v kubectl)" || { echo "kubectl not found"; exit 1; }
 
 running() { systemctl --user is-active --quiet "$1"; }
@@ -32,7 +33,13 @@ for _ in $(seq 1 40); do "$KUBECTL" get nodes --no-headers 2>/dev/null | grep -q
 "$KUBECTL" get nodes --no-headers || { echo "cluster not ready"; exit 1; }
 
 echo "2/3 release $RELEASE in namespace $NAMESPACE"
-helm status "$RELEASE" -n "$NAMESPACE" >/dev/null 2>&1 || { echo "  release not installed (see README: Run it in Kubernetes)"; exit 1; }
+# Installed means: its components exist, whether Helm or Argo CD manages them.
+"$KUBECTL" -n "$NAMESPACE" get deployment "$FULLNAME-collector" >/dev/null 2>&1 \
+  || { echo "  release not installed (see README: Run it in Kubernetes)"; exit 1; }
+if "$KUBECTL" -n argocd get application "$APP" >/dev/null 2>&1; then
+  echo "  managed by Argo CD: $("$KUBECTL" -n argocd get application "$APP" \
+    -o jsonpath='{.status.sync.status}, {.status.health.status} (revision {.status.sync.revision})' | cut -c1-80)"
+fi
 "$KUBECTL" -n "$NAMESPACE" wait --for=condition=Available deploy -l "app.kubernetes.io/instance=$RELEASE" --timeout=300s \
   | sed 's/^/  /' || echo "  some components are not ready yet: kubectl -n $NAMESPACE get pods"
 
