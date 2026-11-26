@@ -1,0 +1,21 @@
+# Argo CD keeps the release "demo" in namespace failure-agent matching this repository: the chart in
+# charts/k8s-failure-agent on main, with the values in deploy/values/lab.yaml.
+# Sync is manual for now (look first, then act); automatic sync and self-heal are switched on by a later commit.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: k8s-failure-agent
+  namespace: argocd
+spec:
+  project: failure-agent
+  source:
+    repoURL: https://github.com/RishikaSharma13/k8s-troubleshooting-agent.git
+    targetRevision: main
+    path: charts/k8s-failure-agent
+    helm:
+      releaseName: demo
+      valueFiles:
+        - ../../deploy/values/lab.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: failure-agent

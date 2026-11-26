@@ -1,0 +1,21 @@
+# Least privilege for Argo CD itself: this project may deploy only from this repository, only into the namespaces
+# the chart uses (its own, plus the collector's read-only Roles in the watched namespaces, and the executor's Role
+# in the remediation namespace), and only these cluster-wide kinds (the collector's optional node-stats role and the
+# executor's namespace read).
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: failure-agent
+  namespace: argocd
+spec:
+  description: The k8s-failure-agent release, and nothing else
+  sourceRepos:
+    - https://github.com/RishikaSharma13/k8s-troubleshooting-agent.git
+  destinations:
+    - {server: https://kubernetes.default.svc, namespace: failure-agent}
+    - {server: https://kubernetes.default.svc, namespace: predict-lab}
+    - {server: https://kubernetes.default.svc, namespace: remediate-lab}
+    - {server: https://kubernetes.default.svc, namespace: pattern-lab}
+  clusterResourceWhitelist:
+    - {group: rbac.authorization.k8s.io, kind: ClusterRole}
+    - {group: rbac.authorization.k8s.io, kind: ClusterRoleBinding}
