@@ -100,9 +100,10 @@ elif todo "build $IMAGE_REPO:$TAG and load it into the cluster"; then
   kind load docker-image "$IMAGE_REPO:$TAG" --name "$CLUSTER" >/dev/null || fail "kind load failed"
 fi
 
-say "7/8 Helm release '$RELEASE' in namespace $NAMESPACE"
-if helm status "$RELEASE" -n "$NAMESPACE" --kube-context "$CTX" >/dev/null 2>&1; then
-  skip "release $RELEASE (change it with: helm upgrade $RELEASE charts/k8s-failure-agent -n $NAMESPACE ...)"
+say "7/8 release '$RELEASE' in namespace $NAMESPACE"
+# Installed means: its components exist, whether Helm or Argo CD (deploy/argocd) manages them.
+if kubectl --context "$CTX" -n "$NAMESPACE" get deployment "$RELEASE-k8s-failure-agent-collector" >/dev/null 2>&1; then
+  skip "release $RELEASE (managed by Argo CD or Helm; see README: GitOps with Argo CD)"
 elif todo "install charts/k8s-failure-agent as $RELEASE (image $IMAGE_REPO:$TAG)"; then
   helm install "$RELEASE" charts/k8s-failure-agent -n "$NAMESPACE" --create-namespace --kube-context "$CTX" \
     --set-string "image.repository=$IMAGE_REPO" --set-string "image.tag=$TAG" --wait --timeout 15m \
