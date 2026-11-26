@@ -4,6 +4,7 @@
 #   approval page  http://127.0.0.1:8080/ui   (k8s-pf-api)
 #   Prometheus     http://localhost:9090      (k8s-pf-prometheus, if monitoring is installed)
 #   Grafana        http://localhost:3000      (k8s-pf-grafana, if monitoring is installed)
+#   Argo CD        https://localhost:8443     (k8s-pf-argocd, if Argo CD is installed)
 # The port-forwards restart by themselves if a pod is replaced. Safe to run again. Close with scripts/stop.sh.
 #
 # Settings (optional file ~/.k8s-failure-lab.env): RELEASE (demo), NAMESPACE (failure-agent),
@@ -41,11 +42,15 @@ if "$KUBECTL" get namespace monitoring >/dev/null 2>&1; then
   forward k8s-pf-prometheus monitoring monitoring-kube-prometheus-prometheus 9090:9090
   forward k8s-pf-grafana monitoring monitoring-grafana 3000:80
 fi
+if "$KUBECTL" get namespace argocd >/dev/null 2>&1; then
+  forward k8s-pf-argocd argocd argocd-server 8443:443
+fi
 sleep 3
 echo
-for s in k8s-pf-api k8s-pf-prometheus k8s-pf-grafana; do printf '  %-18s %s\n' "$s" "$(systemctl --user is-active "$s" 2>/dev/null)"; done
+for s in k8s-pf-api k8s-pf-prometheus k8s-pf-grafana k8s-pf-argocd; do printf '  %-18s %s\n' "$s" "$(systemctl --user is-active "$s" 2>/dev/null)"; done
 echo
 echo "  approval page:  http://127.0.0.1:8080/ui"
 running k8s-pf-grafana && echo "  Grafana:        http://localhost:3000   Prometheus: http://localhost:9090"
+running k8s-pf-argocd && echo "  Argo CD:        https://localhost:8443 (self-signed certificate; user admin)"
 [ "${OPEN:-1}" = 1 ] && command -v xdg-open >/dev/null && xdg-open "http://127.0.0.1:8080/ui" >/dev/null 2>&1 &
 exit 0

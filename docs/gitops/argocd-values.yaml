@@ -1,0 +1,13 @@
+# Argo CD for the lab: keeps the k8s-failure-agent release in the cluster matching Git.
+# Install (version pinned, at least 14 days old; see README "GitOps with Argo CD"):
+#   helm install argocd argo/argo-cd --version <pinned> -n argocd --create-namespace -f docs/gitops/argocd-values.yaml
+# This chart ships no values schema: a misspelled key here is silently ignored, so tests check these names.
+dex:
+  enabled: false               # no single sign-on in a lab: one admin account. Fewer components, less to attack or patch
+notifications:
+  enabled: false               # not used
+configs:
+  cm:
+    timeout.reconciliation: 60s   # compare the cluster with Git every minute (default 120s)
+  # The server keeps its own TLS (no server.insecure): reached through kubectl port-forward at https://localhost:8443,
+  # with a self-signed certificate warning in the browser.
