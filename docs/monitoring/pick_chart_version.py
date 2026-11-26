@@ -1,9 +1,12 @@
-"""Print the newest kube-prometheus-stack version published at least MIN_AGE_DAYS ago, from Helm's cached index.
+"""Print the newest version of a chart published at least MIN_AGE_DAYS ago, from Helm's cached repository index.
 
 Never install "latest": a newly published release can carry problems before anyone notices.
-Usage (after `helm repo add prometheus-community ... && helm repo update prometheus-community`):
-    python3 docs/monitoring/pick_chart_version.py [index-file]
+Usage (after `helm repo add <repo> <url> && helm repo update <repo>`):
+    python3 docs/monitoring/pick_chart_version.py                                  # kube-prometheus-stack
+    python3 docs/monitoring/pick_chart_version.py --repo argo --chart argo-cd       # Argo CD
+    python3 docs/monitoring/pick_chart_version.py --chart <name> <index-file>
 """
+import argparse
 import glob
 import os
 import re
@@ -32,8 +35,8 @@ def versions(index_text: str, chart: str = CHART) -> list[tuple[datetime, str]]:
     return out
 
 
-def pick(index_text: str, now: datetime, min_age_days: int = MIN_AGE_DAYS) -> tuple[str, datetime]:
-    old_enough = [(c, v) for c, v in versions(index_text) if c <= now - timedelta(days=min_age_days)]
+def pick(index_text: str, now: datetime, min_age_days: int = MIN_AGE_DAYS, chart: str = CHART) -> tuple[str, datetime]:
+    old_enough = [(c, v) for c, v in versions(index_text, chart) if c <= now - timedelta(days=min_age_days)]
     if not old_enough:
         raise SystemExit("no version old enough")
     created, version = max(old_enough)
@@ -41,10 +44,15 @@ def pick(index_text: str, now: datetime, min_age_days: int = MIN_AGE_DAYS) -> tu
 
 
 if __name__ == "__main__":
-    path = sys.argv[1] if len(sys.argv) > 1 else next(iter(glob.glob(os.path.expanduser(
-        "~/.cache/helm/repository/prometheus-community-index.yaml"))), None)
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--chart", default=CHART)
+    ap.add_argument("--repo", default="prometheus-community", help="the name used in `helm repo add`")
+    ap.add_argument("index", nargs="?", help="index file (default: Helm's cache for --repo)")
+    args = ap.parse_args()
+    path = args.index or next(iter(glob.glob(os.path.expanduser(
+        f"~/.cache/helm/repository/{args.repo}-index.yaml"))), None)
     if not path:
         raise SystemExit("index not found: run helm repo add/update first, or pass the index file")
-    v, c = pick(open(path).read(), datetime.now(timezone.utc))
+    v, c = pick(open(path).read(), datetime.now(timezone.utc), chart=args.chart)
     print(v)
-    print(f"(published {c:%Y-%m-%d}, at least {MIN_AGE_DAYS} days ago)", file=sys.stderr)
+    print(f"({args.chart}: published {c:%Y-%m-%d}, at least {MIN_AGE_DAYS} days ago)", file=sys.stderr)

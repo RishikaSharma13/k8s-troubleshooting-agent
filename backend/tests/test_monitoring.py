@@ -102,3 +102,23 @@ def test_time_series_have_one_line_per_workload_not_per_pod():
         for t in panel["targets"]:
             if "k8s_failure_" in t["expr"]:
                 assert "by (namespace, deployment)" in t["expr"], t["expr"]
+
+
+def test_picker_handles_other_charts():
+    spec = importlib.util.spec_from_file_location("pick", MON / "pick_chart_version.py")
+    pick = importlib.util.module_from_spec(spec); spec.loader.exec_module(pick)
+    index = ("entries:\n  argo-cd:\n"
+             "  - created: \"2026-11-25T10:00:00.1Z\"\n    version: 10.20.0\n"
+             "  - created: \"2026-11-11T15:05:41.46475242Z\"\n    version: 10.18.0\n"
+             "  - created: \"2026-11-11T09:00:00Z\"\n    version: 10.17.2\n"
+             "  kube-prometheus-stack:\n  - created: \"2026-10-01T10:00:00Z\"\n    version: 92.0.0\n")
+    now = datetime(2026, 11, 26, tzinfo=timezone.utc)
+    assert pick.pick(index, now, chart="argo-cd")[0] == "10.18.0"      # newest of those at least 14 days old
+    assert pick.pick(index, now)[0] == "92.0.0"                        # the default chart is unchanged
+
+
+def test_argocd_settings_keep_tls_and_switch_off_unused_parts():
+    values = yaml.safe_load((MON.parents[0] / "gitops" / "argocd-values.yaml").read_text())
+    assert values["dex"]["enabled"] is False and values["notifications"]["enabled"] is False
+    assert values["configs"]["cm"]["timeout.reconciliation"] == "60s"
+    assert "server.insecure" not in str(values)                         # the server keeps its own TLS
