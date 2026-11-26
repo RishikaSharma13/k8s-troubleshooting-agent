@@ -1,6 +1,8 @@
 # Argo CD keeps the release "demo" in namespace failure-agent matching this repository: the chart in
 # charts/k8s-failure-agent on main, with the values in deploy/values/lab.yaml.
-# Sync is manual for now (look first, then act); automatic sync and self-heal are switched on by a later commit.
+# Automatic: every change merged to main is applied within about a minute; changes made directly in the cluster
+# are reverted (self-heal); resources removed from the chart are removed (prune, which only touches resources Argo CD
+# tracks: the database Secret is not rendered under existingSecret, so it is never tracked and never pruned).
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -19,3 +21,7 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: failure-agent
+  syncPolicy:
+    automated:
+      selfHeal: true
+      prune: true
