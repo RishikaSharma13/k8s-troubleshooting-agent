@@ -98,3 +98,15 @@ def test_scripts_find_the_release_whoever_manages_it():
         assert "helm status" not in text, script                             # there is no Helm release under Argo CD
         assert "get deployment" in text and "-collector" in text, script   # looks for the collector Deployment
     assert "-n argocd get application" in (ROOT / "scripts/start.sh").read_text()
+
+
+def test_the_system_syncs_itself_from_git():
+    policy = APP["spec"]["syncPolicy"]["automated"]
+    assert policy["selfHeal"] is True and policy["prune"] is True
+
+
+@needs_helm
+def test_prune_can_never_reach_the_database_password():
+    """Prune deletes only resources Argo CD renders and tracks; the password Secret must never be among them."""
+    rendered = [d for d in yaml.safe_load_all(render()) if d]
+    assert not [d for d in rendered if d["kind"] == "Secret"]
