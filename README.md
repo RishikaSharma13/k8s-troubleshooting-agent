@@ -25,7 +25,9 @@ Three predictions, each scored against failures that Kubernetes itself recorded:
 Beyond prediction: a **human-approved remediation loop** (in a controlled experiment, 10 of 10 approved actions
 prevented the predicted crash, while 10 of 10 left alone crashed), **calibrated 80% ranges** (79% coverage on unseen
 data), and **Prometheus/Grafana integration**, where a "will fail within 15 minutes" alert runs beside the classic
-"above 80%" one.
+"above 80%" one. It runs in Kubernetes as a Helm chart with least-privilege RBAC, and is delivered by **CI (tests,
+a Trivy vulnerability gate, published image and chart) and GitOps (Argo CD)**: a one-line pull request deploys a
+new version, and a change made by hand in the cluster is reverted within seconds.
 
 > This is a learning and portfolio project, built and evaluated on controlled test workloads in a local
 > [kind](https://kind.sigs.k8s.io/) cluster. It demonstrates the method; the numbers are not general accuracy rates.
@@ -317,6 +319,9 @@ Every merge to `main` publishes a matched pair to GitHub's registry, after the t
 `oci://ghcr.io/rishikasharma13/charts/k8s-failure-agent`, version `<x.y.z>-sha<commit>`, whose default image is the
 one from the same commit (never `latest`; the image's `org.opencontainers.image.revision` label names its commit).
 
+In the lab, Argo CD manages this release (see [Delivery](#delivery-ci-and-gitops-with-argo-cd)); the commands below
+install it without Argo CD.
+
 ```bash
 # Install the published pair (choose a version from the repository's Packages page):
 helm upgrade --install demo oci://ghcr.io/rishikasharma13/charts/k8s-failure-agent --version 0.2.0-sha<commit> \
@@ -336,6 +341,70 @@ copy, and every table was compared afterwards (identical row counts, from 289 in
 The full loop was then proven inside the cluster: a crash predicted for 12:29:34 was approved on the in-cluster page,
 the least-privilege executor restarted the workload at 12:17:06 (12.5 minutes ahead), and the verifier judged it
 **AVOIDED**.
+
+---
+
+## Delivery: CI and GitOps with Argo CD
+
+```mermaid
+flowchart LR
+    PR[Pull request] --> CI[CI: tests, chart tests,<br/>Trivy config scan,<br/>image build and smoke test]
+    CI --> M[Merge to main]
+    M --> P[Publish: rebuild, Trivy gate,<br/>push image sha-commit<br/>and chart x.y.z-shacommit]
+    P --> V[Pull request changing<br/>deploy/values/lab.yaml]
+    V --> A[Argo CD: renders the chart<br/>from main and syncs]
+    A --> K[Cluster]
+    K -. manual change .-> A
+```
+
+**CI** (`.github/workflows/tests.yml`) runs on every push and pull request; only merges to `main` publish.
+
+- **Every tool is pinned and checksum-verified** (Helm, kubeconform, Trivy, kubectl in the image), and third-party
+  charts are pinned to versions at least 14 days old (`docs/monitoring/pick_chart_version.py`).
+- **The chart is linted and its 30+ tests run in CI**; a missing Helm or kubeconform fails the build instead of
+  silently skipping them.
+- **Trivy** scans the Dockerfile and chart (fail on HIGH/CRITICAL), reports HIGH/CRITICAL image vulnerabilities, and
+  **fails on CRITICAL ones that have a fix**, again on the exact image about to be published. Accepted findings live
+  in `.trivyignore`, each with a reason and an **expiry date** after which CI fails again. On its first run the gate
+  found five CRITICAL CVEs in Pillow (pulled in by matplotlib) whose fix needs Python 3.11+; Python 3.10 had reached
+  end of life, so the image and CI moved to **Python 3.12**.
+- **Publishing** pushes `ghcr.io/rishikasharma13/k8s-failure-agent:sha-<commit>` (never `latest`; the image's
+  `org.opencontainers.image.revision` label names its commit) and the chart
+  `oci://ghcr.io/rishikasharma13/charts/k8s-failure-agent` version `<x.y.z>-sha<commit>`, whose default image is the
+  one from the same commit. Only this job may write, and only packages; it logs in with the job's short-lived token.
+
+**GitOps.** Argo CD (installed with its Helm chart, pinned; `docs/gitops/argocd-values.yaml`) keeps the cluster
+matching Git:
+
+- `deploy/argocd/bootstrap/root.yaml`, the only manifest ever applied by hand, is a **root Application** ("app of
+  apps") that keeps Argo CD's own settings in `deploy/argocd/` matching Git. Its project may create only Argo CD
+  Applications and AppProjects, in namespace `argocd`.
+- `deploy/argocd/application.yaml` renders `charts/k8s-failure-agent` from `main` with `deploy/values/lab.yaml`, in a
+  project limited to this repository and the four namespaces the chart uses. **Auto-sync, self-heal and prune** are on.
+- **Deploying is a one-line pull request** changing `image.tag` in `deploy/values/lab.yaml`. Measured: merged at
+  about 13:47, running at 13:48:06 (Argo CD checks Git every 60 s). A deployment scaled to zero by hand was restored
+  about 20 seconds later.
+
+**Traps met on the way, and the fixes:**
+
+| Trap | Fix |
+|---|---|
+| Argo CD renders charts without cluster access, so Helm's `lookup` finds nothing: every render would generate a new database password and overwrite the real one | `database.existingSecret`; a test checks the Argo CD render is byte-for-byte reproducible and contains no Secret |
+| `helm upgrade` without values silently reused an earlier `--set image.tag`: Helm's history showed the new version while the pods ran the old image | Checked the running pods, not the release record; `--reset-values`; under Argo CD all values live in Git |
+| An Application applied by hand is not watched by Argo CD, so editing it in Git changed nothing | The root Application manages `deploy/argocd/` from Git |
+| Prune deletes what Argo CD tracks | The password Secret is never rendered, so never tracked and never pruned (tested) |
+| CI (Python 3.12) passed a version-picker bug that the laptop (Python 3.10) caught: 3.10 parses only 3 or 6 decimals | Fractions normalized to 6 digits; tested with 1 to 9 decimals |
+
+Setting it up on the lab (after `scripts/setup-lab.sh --with-monitoring`):
+
+```bash
+helm repo add argo https://argoproj.github.io/argo-helm && helm repo update argo
+V=$(python3 docs/monitoring/pick_chart_version.py --repo argo --chart argo-cd)      # >= 14 days old
+helm pull argo/argo-cd --version "$V" -d /tmp/argocd && sha256sum /tmp/argocd/argo-cd-$V.tgz   # compare with the index
+helm install argocd /tmp/argocd/argo-cd-$V.tgz -n argocd --create-namespace -f docs/gitops/argocd-values.yaml --wait
+kubectl apply -f deploy/argocd/bootstrap/root.yaml                                  # once; everything else from Git
+scripts/start.sh                                                                     # Argo CD at https://localhost:8443
+```
 
 ---
 
@@ -484,6 +553,8 @@ docs/testing/pattern-lab/  realistic patterns: cycles, noise and spikes, steps
 docs/monitoring/           Prometheus/Grafana values, alert rules, dashboard
 scripts/                   setup-lab.sh, start.sh, stop.sh
 charts/k8s-failure-agent/  Helm chart: templates, values and schema, RBAC, helm test
+deploy/                    GitOps: Argo CD root, project and Application; deploy/values/lab.yaml (what runs)
+docs/gitops/               Argo CD install settings
 Dockerfile                 one image for every component (non-root, pinned kubectl)
 docs/results/              committed evaluation reports
 ```
@@ -520,13 +591,18 @@ docs/results/              committed evaluation reports
   validation caught them) and an all-digit image tag read as a number.
 - **Tests must not be able to touch real systems.** A setup test meant to fake a missing `helm` found the real one
   on a developer machine; the tests now run with a sealed search path of stand-ins.
+- **Check what is running, not what the tool reports.** Helm's history showed the new version while the pods ran the
+  old image; verifying the pods caught it.
+- **A gate is only useful if it can fail.** The new Trivy gate failed on its first run (five CRITICAL CVEs) and led to
+  the Python 3.12 upgrade; tests of `helm test`, the setup script and CI tool checks are each proven to fail as well.
 
 ---
 
 ## What's next
 
-- CI that builds the image on every push, scans it (Trivy), publishes it and the chart, tagged by commit.
-- GitOps: Argo CD deploying the chart from Git.
-- Security hardening: NetworkPolicies, the restricted Pod Security Standard, an SBOM.
+- Supply-chain security: an SBOM for every image, images signed with cosign, and a Kyverno policy admitting only
+  signed images.
+- CI on both Python 3.10 and 3.12; newer GitHub Actions versions (Node.js 24).
+- NetworkPolicies (only the components that need the database may reach it).
 - An adaptive look-back (detect a repeating pattern, then look back over two of its cycles), re-tested on new data.
 - A safety margin for spiky workloads, from their own calibrated errors; a fair Prophet test with a custom seasonality.
