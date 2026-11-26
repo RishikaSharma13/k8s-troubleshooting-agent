@@ -122,3 +122,14 @@ def test_argocd_settings_keep_tls_and_switch_off_unused_parts():
     assert values["dex"]["enabled"] is False and values["notifications"]["enabled"] is False
     assert values["configs"]["cm"]["timeout.reconciliation"] == "60s"
     assert "server.insecure" not in str(values)                         # the server keeps its own TLS
+
+
+def test_picker_reads_any_number_of_decimals():
+    """Seen on 26 Nov on Python 3.10: '.1' failed to parse (3.10 accepts only 3 or 6 decimals; 3.11+ accept any)."""
+    spec = importlib.util.spec_from_file_location("pick", MON / "pick_chart_version.py")
+    pick = importlib.util.module_from_spec(spec); spec.loader.exec_module(pick)
+    for frac, micro in ((".1", 100000), (".12345", 123450), (".123456", 123456), (".46475242", 464752), (".030554039", 30554)):
+        t = pick.parse_time(f"2026-11-25T10:00:00{frac}Z")
+        assert t.microsecond == micro and t.utcoffset().total_seconds() == 0, frac
+    assert pick.parse_time("2026-11-25T10:00:00Z").microsecond == 0
+    assert pick.parse_time("2026-11-25T10:00:00.5+05:30").utcoffset().total_seconds() == 19800
